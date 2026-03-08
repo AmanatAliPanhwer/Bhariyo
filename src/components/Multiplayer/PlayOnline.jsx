@@ -3,25 +3,52 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Sword, User } from 'lucide-react';
 import './PlayOnline.css';
 
-export default function PlayOnline({ socket, onChallenge }) {
+export default function PlayOnline({ supabase, channel }) {
   const [onlineUsers, setOnlineUsers] = useState([]);
   const { user } = useAuth();
 
   useEffect(() => {
-    if (socket) {
-      socket.emit('register_online', { username: user.username, id: user.id, elo: user.elo });
+    if (channel) {
+      const handlePresenceSync = () => {
+        const state = channel.presenceState();
+        const users = [];
+        
+        Object.keys(state).forEach((key) => {
+          // Presence can have multiple sessions for the same user
+          const presence = state[key][0];
+          if (presence.username !== user.username) {
+            users.push(presence);
+          }
+        });
+        
+        setOnlineUsers(users);
+      };
+
+      channel.on('presence', { event: 'sync' }, handlePresenceSync);
       
-      socket.on('online_users_update', (users) => {
-        // Filter out self
-        const others = users.filter(u => u.username !== user.username);
-        setOnlineUsers(others);
-      });
+      // Initial sync
+      handlePresenceSync();
 
       return () => {
-        socket.off('online_users_update');
+        channel.off('presence', { event: 'sync' }, handlePresenceSync);
       };
     }
-  }, [socket, user]);
+  }, [channel, user.username]);
+
+  const sendChallenge = (targetUser) => {
+    const challengeId = Math.random().toString(36).substring(7);
+    channel.send({
+      type: 'broadcast',
+      event: 'challenge',
+      payload: {
+        to: targetUser.username,
+        from: user.username,
+        elo: user.elo || 1200,
+        challengeId
+      }
+    });
+    alert(`Challenge sent to ${targetUser.username}`);
+  };
 
   return (
     <div className="play-online-container">
@@ -44,7 +71,7 @@ export default function PlayOnline({ socket, onChallenge }) {
             </div>
           ) : (
             onlineUsers.map((player) => (
-              <div key={player.socketId} className="player-challenge-card chess-card">
+              <div key={player.username} className="player-challenge-card chess-card">
                 <div className="player-info">
                   <div className="player-avatar">
                     {player.username[0].toUpperCase()}
@@ -60,7 +87,7 @@ export default function PlayOnline({ socket, onChallenge }) {
                 <button 
                   className="btn-chess btn-chess-primary challenge-btn"
                   disabled={player.status !== 'AVAILABLE'}
-                  onClick={() => socket.emit('send_challenge', player.socketId)}
+                  onClick={() => sendChallenge(player)}
                 >
                   <Sword size={18} />
                   <span>Challenge</span>

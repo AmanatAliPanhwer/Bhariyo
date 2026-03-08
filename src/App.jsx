@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import Board from './components/Board';
 import GameStatus from './components/GameStatus';
@@ -13,7 +13,7 @@ import GameSetup from './components/Game/GameSetup';
 import BotSelection from './components/Game/BotSelection';
 import { useAuth } from './contexts/AuthContext';
 import { findNewMills, checkWinList, ADJACENCY, isPhase3, canRemoveAnyPiece, MILLS, getBotMove } from './gameLogic';
-import { io } from 'socket.io-client';
+import { supabase } from './supabaseClient';
 import { 
   Trophy, 
   GraduationCap, 
@@ -34,14 +34,14 @@ import {
   ChevronRight
 } from 'lucide-react';
 
-const SOCKET_URL = 'http://localhost:5000';
+const API_BASE_URL = 'https://bhariyo-backend.vercel.app'; // Your Vercel backend URL
 
 function App() {
   const { user, loading: authLoading, logout, updateUser } = useAuth();
-  const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard', 'game', 'learn', 'play_online'
-  const [socket, setSocket] = useState(null);
+  const [currentView, setCurrentView] = useState('dashboard');
+  const [channel, setChannel] = useState(null);
   const [room, setRoom] = useState(null);
-  const [playerSide, setPlayerSide] = useState(null); // 1 or 2
+  const [playerSide, setPlayerSide] = useState(null);
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const [isBotGame, setIsBotGame] = useState(false);
   const [bot, setBot] = useState(null);
@@ -65,138 +65,209 @@ function App() {
   const [p1Time, setP1Time] = useState(600);
   const [p2Time, setP2Time] = useState(600);
 
+  // Use refs to avoid closure issues in callbacks
+  const roomRef = useRef(null);
+  const playerSideRef = useRef(null);
+  const userRef = useRef(null);
+
+  useEffect(() => {
+    roomRef.current = room;
+    playerSideRef.current = playerSide;
+    userRef.current = user;
+  }, [room, playerSide, user]);
+
   // Local timer effect
   useEffect(() => {
     let interval;
-    if (!isMultiplayer && currentView === 'game' && !winner) {
+    if (currentView === 'game' && !winner) {
       interval = setInterval(() => {
         if (currentPlayer === 1) {
           setP1Time(prev => Math.max(0, prev - 1));
         } else {
           setP2Time(prev => Math.max(0, prev - 1));
         }
+
+        // If it's my turn in multiplayer and I run out of time
+        if (isMultiplayer && roomRef.current && !winner) {
+           const myTime = playerSideRef.current === 1 ? p1Time : p2Time;
+           if (myTime <= 1) { // 1 to account for lag
+             handleTimeout();
+           }
+        }
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isMultiplayer, currentView, currentPlayer, winner]);
+  }, [currentView, currentPlayer, winner, isMultiplayer, p1Time, p2Time]);
 
-  // Bot Move Effect
-  useEffect(() => {
-    if (isBotGame && currentPlayer === 2 && !winner && currentView === 'game') {
-      const timer = setTimeout(() => {
-        if (turnState === 'SELECTED_PIECE' && activeNode !== null) {
-          // If we already selected a piece, we need to find WHERE to move it
-          const move = getBotMove(board, 2, gamePhase, 'IDLE', unplacedPieces, bot?.level);
-          if (move && typeof move === 'object' && move.from === activeNode) {
-            handleNodeClick(move.to);
-          } else {
-             // Bot might have changed its mind or state is weird, deselect
-             handleNodeClick(activeNode);
-          }
-          return;
+  const handleTimeout = async () => {
+    if (winner) return;
+    const opponent = roomRef.current.players.find(p => p.username !== userRef.current.username);
+    await finalizeGame(opponent.username, 'Time Out');
+  };
+
+  const finalizeGame = async (winUser, reason, isDraw = false) => {
+    if (winner) return;
+    setWinner(winUser || (isDraw ? 'Draw' : 'Unknown'));
+    
+    if (isMultiplayer && roomRef.current) {
+      const me = userRef.current;
+      const opponent = roomRef.current.players.find(p => p.username !== me.username);
+      const isMeWinner = winUser === me.username;
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/game/end`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({
+            winnerId: isMeWinner ? me.id : (isDraw ? me.id : opponent.id),
+            loserId: isMeWinner ? opponent.id : (isDraw ? opponent.id : me.id),
+            isDraw,
+            winnerElo: isMeWinner ? me.elo : (isDraw ? me.elo : (opponent.elo || 1200)),
+            loserElo: isMeWinner ? (opponent.elo || 1200) : (isDraw ? (opponent.elo || 1200) : me.elo)
+          })
+        });
+        
+        const data = await response.json();
+        if (data.result) {
+          const updatedMe = isMeWinner ? data.result.winner : (isDraw ? data.result.p1 : data.result.loser);
+          updateUser(updatedMe);
         }
-
-        const move = getBotMove(board, 2, gamePhase, turnState, unplacedPieces, bot?.level);
-        if (move !== null) {
-          if (turnState === 'REMOVING_OPPONENT') {
-            handleNodeClick(move);
-          } else if (gamePhase === 'PLACING') {
-            handleNodeClick(move);
-          } else if (gamePhase === 'PLAYING') {
-            if (turnState === 'IDLE') {
-              handleNodeClick(move.from);
-              // The next tick will handle the 'to' part because turnState will be SELECTED_PIECE
-            }
-          }
-        }
-      }, 1000);
-      return () => clearTimeout(timer);
+      } catch (err) {
+        console.error('Failed to update stats:', err);
+      }
     }
-  }, [isBotGame, currentPlayer, turnState, gamePhase, winner, currentView, board, unplacedPieces, bot, activeNode]);
+  };
 
-  // Handle local timeout
-  useEffect(() => {
-    if (!isMultiplayer && (p1Time === 0 || p2Time === 0)) {
-      setWinner(p1Time === 0 ? 'Player 2' : user?.username || 'Player 1');
-    }
-  }, [p1Time, p2Time, isMultiplayer, user?.username]);
-
-  const p1Count = unplacedPieces[1] + board.filter(p => p === 1).length;
-  const p2Count = unplacedPieces[2] + board.filter(p => p === 2).length;
-
-  // Initialize Socket
+  // Initialize Supabase Realtime
   useEffect(() => {
     if (user) {
-      const newSocket = io(SOCKET_URL);
-      setSocket(newSocket);
-
-      newSocket.on('connect', () => {
-        newSocket.emit('register_online', { username: user.username, id: user.id, elo: user.elo });
+      const lobbyChannel = supabase.channel('lobby', {
+        config: {
+          presence: {
+            key: user.username,
+          },
+        },
       });
 
-      newSocket.on('stats_update', (updatedStats) => {
-        updateUser(updatedStats);
-      });
+      lobbyChannel
+        .on('presence', { event: 'sync' }, () => {
+          // PlayOnline will handle the user list from presence
+        })
+        .on('broadcast', { event: 'challenge' }, (payload) => {
+          if (payload.payload.to === user.username) {
+            setIncomingChallenge({
+              challengeId: payload.payload.challengeId,
+              from: { username: payload.payload.from, elo: payload.payload.elo }
+            });
+          }
+        })
+        .on('broadcast', { event: 'challenge_response' }, (payload) => {
+          if (payload.payload.to === user.username) {
+            if (payload.payload.accepted) {
+              startMultiplayerGame(payload.payload.roomData, payload.payload.side);
+            } else {
+              alert('Challenge declined');
+            }
+          }
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await lobbyChannel.track({
+              username: user.username,
+              id: user.id,
+              elo: user.elo || 1200,
+              status: 'AVAILABLE',
+              online_at: new Date().toISOString(),
+            });
+          }
+        });
 
-      newSocket.on('game_start', (matchData) => {
-        setRoom(matchData);
-        const mySide = matchData.players.find(p => p.username === user.username)?.side;
-        setPlayerSide(mySide);
-        setIsMultiplayer(true);
-        setCurrentView('game');
-        setIncomingChallenge(null);
-        setP1Time(matchData.p1Time);
-        setP2Time(matchData.p2Time);
-        resetGame();
-      });
+      setChannel(lobbyChannel);
 
-      newSocket.on('time_sync', ({ p1Time: t1, p2Time: t2 }) => {
-        setP1Time(t1);
-        setP2Time(t2);
-      });
+      return () => {
+        lobbyChannel.unsubscribe();
+      };
+    }
+  }, [user]);
 
-      newSocket.on('game_over', ({ winner: winUser, reason }) => {
-        setWinner(winUser);
-        alert(`Game Over! ${winUser} won by ${reason}`);
-      });
+  const startMultiplayerGame = (roomData, mySide) => {
+    const gameChannel = supabase.channel(`room_${roomData.id}`);
 
-      newSocket.on('draw_offered', () => {
-        if (window.confirm('Opponent offered a draw. Accept?')) {
-          newSocket.emit('accept_draw', room?.id);
+    gameChannel
+      .on('broadcast', { event: 'move' }, (payload) => {
+        handleMoveImpact(payload.payload, true);
+      })
+      .on('broadcast', { event: 'resign' }, async (payload) => {
+        if (payload.payload.from !== userRef.current.username) {
+          await finalizeGame(userRef.current.username, 'Resignation');
         }
-      });
+      })
+      .on('broadcast', { event: 'draw_offer' }, (payload) => {
+        if (payload.payload.from !== userRef.current.username) {
+           if (window.confirm('Opponent offered a draw. Accept?')) {
+             gameChannel.send({
+               type: 'broadcast',
+               event: 'draw_response',
+               payload: { accepted: true, from: userRef.current.username }
+             });
+             finalizeGame(null, 'Mutual Agreement', true);
+           }
+        }
+      })
+      .on('broadcast', { event: 'draw_response' }, (payload) => {
+         if (payload.payload.accepted && payload.payload.from !== userRef.current.username) {
+            finalizeGame(null, 'Mutual Agreement', true);
+         }
+      })
+      .subscribe();
 
-      newSocket.on('draw_accepted', () => {
-        setWinner('Draw');
-        alert('Game ended in a draw.');
-      });
+    setRoom({ ...roomData, channel: gameChannel });
+    setPlayerSide(mySide);
+    setIsMultiplayer(true);
+    setCurrentView('game');
+    setIncomingChallenge(null);
+    setP1Time(600);
+    setP2Time(600);
+    resetGame();
+  };
 
-      newSocket.on('incoming_challenge', (challengeData) => {
-        setIncomingChallenge(challengeData);
-      });
+  const handleAcceptChallenge = (challenge) => {
+    const roomId = Math.random().toString(36).substring(7);
+    const roomData = {
+      id: roomId,
+      players: [
+        { username: challenge.from.username, side: 1, elo: challenge.from.elo },
+        { username: user.username, side: 2, elo: user.elo }
+      ]
+    };
 
-      newSocket.on('challenge_declined', () => {
-        alert('Challenge declined');
-      });
+    channel.send({
+      type: 'broadcast',
+      event: 'challenge_response',
+      payload: { 
+        to: challenge.from.username, 
+        accepted: true, 
+        roomData, 
+        side: 1,
+        challengeId: challenge.challengeId 
+      }
+    });
 
-      newSocket.on('opponent_move', (moveData) => {
-        handleMoveImpact(moveData, true);
-      });
+    startMultiplayerGame(roomData, 2);
+    setIncomingChallenge(null);
+  };
 
-      newSocket.on('player_disconnected', () => {
-        alert('Opponent disconnected');
-        handleQuitGame();
-      });
-
-      return () => newSocket.disconnect();
-    }
-  }, [user, room?.id]);
-
-  useEffect(() => {
-    if (unplacedPieces[1] === 0 && unplacedPieces[2] === 0 && gamePhase === 'PLACING') {
-      setGamePhase('PLAYING');
-    }
-  }, [unplacedPieces, gamePhase]);
+  const handleDeclineChallenge = (challenge) => {
+    channel.send({
+      type: 'broadcast',
+      event: 'challenge_response',
+      payload: { to: challenge.from.username, accepted: false }
+    });
+    setIncomingChallenge(null);
+  };
 
   const resetGame = () => {
     setBoard(Array(24).fill(null));
@@ -210,54 +281,16 @@ function App() {
     setMoveHistory([]);
   };
 
-  const handlePlayLocal = () => {
-    setIsMultiplayer(false);
-    setIsBotGame(false);
-    setBot(null);
-    setRoom(null);
-    setPlayerSide(null);
-    setCurrentView('game_setup');
-  };
-
-  const handlePlayBots = () => {
-    setCurrentView('play_bots');
-  };
-
-  const handleSelectBot = (selectedBot) => {
-    setBot(selectedBot);
-    setIsBotGame(true);
-    setIsMultiplayer(false);
-    setPlayerSide(1); // User is always player 1 vs bot for now
-    resetGame();
-    setP1Time(600);
-    setP2Time(600);
-    setCurrentView('game');
-  };
-
-  const handleStartLocalGame = (seconds) => {
-    resetGame();
-    setP1Time(seconds);
-    setP2Time(seconds);
-    setCurrentView('game');
-  };
-
-  const handlePlayOnline = () => {
-    setCurrentView('play_online');
-  };
-
-  const handleAcceptChallenge = (challengeId) => {
-    socket.emit('accept_challenge', challengeId);
-  };
-
-  const handleDeclineChallenge = (challengeId) => {
-    socket.emit('decline_challenge', challengeId);
-    setIncomingChallenge(null);
-  };
-
-  const handleResign = () => {
+  const handleResign = async () => {
     if (!winner && window.confirm('Are you sure you want to resign?')) {
-      if (isMultiplayer && socket && room) {
-        socket.emit('resign', room.id);
+      if (isMultiplayer && room?.channel) {
+        room.channel.send({
+          type: 'broadcast',
+          event: 'resign',
+          payload: { from: user.username }
+        });
+        const opponent = room.players.find(p => p.username !== user.username);
+        await finalizeGame(opponent.username, 'Resignation');
       } else {
         setWinner(currentPlayer === 1 ? 'Player 2' : user?.username || 'Player 1');
       }
@@ -266,8 +299,12 @@ function App() {
 
   const handleOfferDraw = () => {
     if (!winner) {
-      if (isMultiplayer && socket && room) {
-        socket.emit('offer_draw', room.id);
+      if (isMultiplayer && room?.channel) {
+        room.channel.send({
+          type: 'broadcast',
+          event: 'draw_offer',
+          payload: { from: user.username }
+        });
         alert('Draw offer sent');
       } else {
         if (window.confirm('Propose a draw?')) {
@@ -277,17 +314,14 @@ function App() {
     }
   };
 
-  const addMoveToHistory = (player, from, to, type) => {
-    // NODE coordinates/indices are roughly 0-23. Let's make them 1-based labels for display
-    const label = (idx) => idx === null ? '' : idx + 1;
-    const playerTag = player === 1 ? 'W' : 'B';
-
-    let moveStr = '';
-    if (type === 'PLACE') moveStr = `${playerTag}: @Node ${label(to)}`;
-    else if (type === 'REMOVE') moveStr = `${playerTag}: Captured @${label(to)}`;
-    else moveStr = `${playerTag}: ${label(from)} -> ${label(to)}`;
-
-    setMoveHistory(prev => [...prev, moveStr]);
+  const emitMove = (moveData) => {
+    if (isMultiplayer && room?.channel) {
+      room.channel.send({
+        type: 'broadcast',
+        event: 'move',
+        payload: moveData
+      });
+    }
   };
 
   const handleMoveImpact = useCallback((moveData, isFromOpponent = false) => {
@@ -298,18 +332,24 @@ function App() {
     setCurrentPlayer(nextPlayer);
     setTurnState(nextTurnState);
     setActiveMills(nextMills || []);
-    if (isWin) setWinner(isWin);
+    if (isWin) finalizeGame(isWin, 'Defeat');
     if (nextTurnState === 'IDLE') setActiveNode(null);
 
     if (isFromOpponent) {
       addMoveToHistory(playerMoved, fromNode, nodeId, type);
     }
-  }, []);
+  }, [user, room, isMultiplayer]);
 
-  const emitMove = (moveData) => {
-    if (room && socket) {
-      socket.emit('move', { roomId: room.id, moveData });
-    }
+  const addMoveToHistory = (player, from, to, type) => {
+    const label = (idx) => idx === null ? '' : idx + 1;
+    const playerTag = player === 1 ? 'W' : 'B';
+
+    let moveStr = '';
+    if (type === 'PLACE') moveStr = `${playerTag}: @Node ${label(to)}`;
+    else if (type === 'REMOVE') moveStr = `${playerTag}: Captured @${label(to)}`;
+    else moveStr = `${playerTag}: ${label(from)} -> ${label(to)}`;
+
+    setMoveHistory(prev => [...prev, moveStr]);
   };
 
   const handleNodeClick = (nodeId) => {
@@ -365,7 +405,7 @@ function App() {
       setTurnState(nextTurn);
       setCurrentPlayer(nextPlayer);
       setActiveMills([]);
-      if (isWin) setWinner(isWin);
+      if (isWin) finalizeGame(isWin, 'Defeat');
       addMoveToHistory(currentPlayer, null, nodeId, 'REMOVE');
       if (isMultiplayer) emitMove(moveData);
       return;
@@ -463,7 +503,7 @@ function App() {
             setActiveMills(nextMills);
             setCurrentPlayer(nextPlayer);
             setActiveNode(null);
-            if (isWin) setWinner(isWin);
+            if (isWin) finalizeGame(isWin, 'Defeat');
             addMoveToHistory(currentPlayer, activeNode, nodeId, 'MOVE');
             if (isMultiplayer) emitMove(moveData);
           }
@@ -473,7 +513,9 @@ function App() {
   };
 
   const handleQuitGame = () => {
-    socket?.emit('leave_game', room?.id);
+    if (isMultiplayer && room?.channel) {
+       room.channel.unsubscribe();
+    }
     setRoom(null);
     setIsMultiplayer(false);
     setIsBotGame(false);
@@ -482,6 +524,41 @@ function App() {
     setIsFocusMode(false);
     setP1Time(600);
     setP2Time(600);
+  };
+
+  const handlePlayLocal = () => {
+    setIsMultiplayer(false);
+    setIsBotGame(false);
+    setBot(null);
+    setRoom(null);
+    setPlayerSide(null);
+    setCurrentView('game_setup');
+  };
+
+  const handlePlayBots = () => {
+    setCurrentView('play_bots');
+  };
+
+  const handleSelectBot = (selectedBot) => {
+    setBot(selectedBot);
+    setIsBotGame(true);
+    setIsMultiplayer(false);
+    setPlayerSide(1); 
+    resetGame();
+    setP1Time(600);
+    setP2Time(600);
+    setCurrentView('game');
+  };
+
+  const handleStartLocalGame = (seconds) => {
+    resetGame();
+    setP1Time(seconds);
+    setP2Time(seconds);
+    setCurrentView('game');
+  };
+
+  const handlePlayOnline = () => {
+    setCurrentView('play_online');
   };
 
   if (authLoading) return <div className="loading">Loading...</div>;
@@ -517,8 +594,8 @@ function App() {
     });
   }
 
-  const opponent = isMultiplayer 
-    ? room.players.find(p => p.id !== socket?.id) 
+  const opponentInfo = isMultiplayer 
+    ? room.players.find(p => p.username !== user.username) 
     : (isBotGame ? { username: bot.name, elo: bot.rating, avatar: bot.avatar } : { username: 'Player 2' });
 
   const renderContent = () => {
@@ -539,7 +616,7 @@ function App() {
       return <GameSetup onStart={handleStartLocalGame} onBack={() => setCurrentView('dashboard')} />;
     }
     if (currentView === 'play_online') {
-      return <PlayOnline socket={socket} />;
+      return <PlayOnline supabase={supabase} channel={channel} />;
     }
     if (currentView === 'play_bots') {
       return <BotSelection onSelectBot={handleSelectBot} onBack={() => setCurrentView('dashboard')} />;
@@ -550,7 +627,7 @@ function App() {
         {isFocusMode && (
           <div className="focus-sidebar-left">
              <div className="focus-avatar-box opponent">
-                <div className="avatar-med">{opponent.username[0].toUpperCase()}</div>
+                <div className="avatar-med">{opponentInfo.username[0].toUpperCase()}</div>
                 <div className="piece-stats-badge">
                    <span className="label">REMAINING</span>
                    <span className="val">{playerSide === 1 ? unplacedPieces[2] : unplacedPieces[1]}</span>
@@ -586,15 +663,15 @@ function App() {
             <div className="player-strip opponent-strip">
               <div className="player-meta">
                 <div className="avatar-small">
-                  {opponent.avatar ? (
-                    <img src={opponent.avatar} alt="" className="player-img-avatar" />
+                  {opponentInfo.avatar ? (
+                    <img src={opponentInfo.avatar} alt="" className="player-img-avatar" />
                   ) : (
-                    opponent.username[0].toUpperCase()
+                    opponentInfo.username[0].toUpperCase()
                   )}
                 </div>
                 <div className="player-name-badges">
-                  <span className="player-name">{opponent.username}</span>
-                  <span className="rating-badge">{opponent.elo || 1200}</span>
+                  <span className="player-name">{opponentInfo.username}</span>
+                  <span className="rating-badge">{opponentInfo.elo || 1200}</span>
                 </div>
               </div>
               {isMultiplayer && <MatchTimer seconds={playerSide === 1 ? p2Time : p1Time} isActive={currentPlayer !== playerSide} />}
@@ -692,8 +769,8 @@ function App() {
                   turnState={turnState}
                   gamePhase={gamePhase}
                   unplacedPieces={unplacedPieces}
-                  p1Count={p1Count}
-                  p2Count={p2Count}
+                  p1Count={unplacedPieces[1] + board.filter(p => p === 1).length}
+                  p2Count={unplacedPieces[2] + board.filter(p => p === 2).length}
                   winner={winner}
                   moveHistory={moveHistory}
                   activeTab={activeTab}
