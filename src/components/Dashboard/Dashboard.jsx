@@ -35,6 +35,10 @@ export default function Dashboard({ onPlayLocal, onPlayOnline, onLearnClick, onP
 
           <div className="stats-header-row">
             <div className="header-stat">
+              <span className="h-stat-label">📈 Rating</span>
+              <span className="h-stat-value">{user.elo || 1200}</span>
+            </div>
+            <div className="header-stat">
               <span className="h-stat-label">🏆 Wins</span>
               <span className="h-stat-value">{user.wins || 0}</span>
             </div>

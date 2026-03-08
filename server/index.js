@@ -31,21 +31,49 @@ db.exec(`
     username TEXT UNIQUE,
     password TEXT,
     wins INTEGER DEFAULT 0,
-    games_played INTEGER DEFAULT 0
+    games_played INTEGER DEFAULT 0,
+    elo INTEGER DEFAULT 1200
   )
 `);
 
 // Migrations for existing databases
-try {
-  db.exec('ALTER TABLE users ADD COLUMN wins INTEGER DEFAULT 0');
-} catch (e) {
-  // Column already exists or other error
+const migrations = [
+  'ALTER TABLE users ADD COLUMN wins INTEGER DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN games_played INTEGER DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN elo INTEGER DEFAULT 1200'
+];
+
+migrations.forEach(m => {
+  try {
+    db.exec(m);
+  } catch (e) {
+    // Column already exists or other error
+  }
+});
+
+// Elo Calculation Helper
+function calculateElo(ratingA, ratingB, scoreA, kFactor = 32) {
+  const expectedA = 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
+  return Math.round(ratingA + kFactor * (scoreA - expectedA));
 }
 
-try {
-  db.exec('ALTER TABLE users ADD COLUMN games_played INTEGER DEFAULT 0');
-} catch (e) {
-  // Column already exists or other error
+function updatePlayerStats(userId, isWin, isDraw, opponentElo) {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) return null;
+
+  const score = isWin ? 1 : (isDraw ? 0.5 : 0);
+  const newElo = calculateElo(user.elo, opponentElo, score);
+  
+  const stmt = db.prepare(`
+    UPDATE users 
+    SET elo = ?, 
+        wins = wins + ?, 
+        games_played = games_played + 1 
+    WHERE id = ?
+  `);
+  stmt.run(newElo, isWin ? 1 : 0, userId);
+  
+  return { ...user, elo: newElo, wins: user.wins + (isWin ? 1 : 0), games_played: user.games_played + 1 };
 }
 
 // Auth Routes
@@ -54,10 +82,10 @@ app.post('/api/register', (req, res) => {
   const hashedPassword = bcrypt.hashSync(password, 10);
   
   try {
-    const stmt = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)');
+    const stmt = db.prepare('INSERT INTO users (username, password, elo) VALUES (?, ?, 1200)');
     const result = stmt.run(username, hashedPassword);
     const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET);
-    res.json({ token, user: { id: result.lastInsertRowid, username } });
+    res.json({ token, user: { id: result.lastInsertRowid, username, elo: 1200, wins: 0, games_played: 0 } });
   } catch (err) {
     res.status(400).json({ message: 'Username already exists' });
   }
@@ -70,14 +98,23 @@ app.post('/api/login', (req, res) => {
   
   if (user && bcrypt.compareSync(password, user.password)) {
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
-    res.json({ token, user: { id: user.id, username: user.username, wins: user.wins, games_played: user.games_played } });
+    res.json({ 
+      token, 
+      user: { 
+        id: user.id, 
+        username: user.username, 
+        wins: user.wins, 
+        games_played: user.games_played,
+        elo: user.elo 
+      } 
+    });
   } else {
     res.status(401).json({ message: 'Invalid credentials' });
   }
 });
 
 app.get('/api/profile', authMiddleware, (req, res) => {
-  const stmt = db.prepare('SELECT id, username, wins, games_played FROM users WHERE id = ?');
+  const stmt = db.prepare('SELECT id, username, wins, games_played, elo FROM users WHERE id = ?');
   const user = stmt.get(req.user.id);
   res.json(user);
 });
@@ -95,10 +132,67 @@ io.on('connection', (socket) => {
       socketId: socket.id,
       username: userData.username, 
       id: userData.id,
+      elo: userData.elo || 1200,
       status: 'AVAILABLE' 
     });
     broadcastOnlineUsers();
   });
+
+  const endGame = (roomId, winnerUsername, reason, isDraw = false) => {
+    const match = matches.get(roomId);
+    if (!match) return;
+
+    clearInterval(match.timer);
+
+    if (!isDraw) {
+      const winnerPlayer = match.players.find(p => p.username === winnerUsername);
+      const loserPlayer = match.players.find(p => p.username !== winnerUsername);
+
+      if (winnerPlayer && loserPlayer) {
+        const winnerData = onlineUsers.get(winnerPlayer.id);
+        const loserData = onlineUsers.get(loserPlayer.id);
+
+        if (winnerData && loserData) {
+          const updatedWinner = updatePlayerStats(winnerData.id, true, false, loserData.elo);
+          const updatedLoser = updatePlayerStats(loserData.id, false, false, winnerData.elo);
+
+          // Update onlineUsers cache
+          winnerData.elo = updatedWinner.elo;
+          loserData.elo = updatedLoser.elo;
+
+          io.to(winnerPlayer.id).emit('stats_update', updatedWinner);
+          io.to(loserPlayer.id).emit('stats_update', updatedLoser);
+        }
+      }
+    } else {
+      // Draw logic
+      const p1 = match.players[0];
+      const p2 = match.players[1];
+      const p1Data = onlineUsers.get(p1.id);
+      const p2Data = onlineUsers.get(p2.id);
+
+      if (p1Data && p2Data) {
+        const updatedP1 = updatePlayerStats(p1Data.id, false, true, p2Data.elo);
+        const updatedP2 = updatePlayerStats(p2Data.id, false, true, p1Data.elo);
+
+        p1Data.elo = updatedP1.elo;
+        p2Data.elo = updatedP2.elo;
+
+        io.to(p1.id).emit('stats_update', updatedP1);
+        io.to(p2.id).emit('stats_update', updatedP2);
+      }
+    }
+
+    io.to(roomId).emit('game_over', { winner: winnerUsername, reason, isDraw });
+    
+    match.players.forEach(p => {
+      const u = onlineUsers.get(p.id);
+      if (u) u.status = 'AVAILABLE';
+    });
+
+    matches.delete(roomId);
+    broadcastOnlineUsers();
+  };
 
   socket.on('send_challenge', (targetSocketId) => {
     const challenger = onlineUsers.get(socket.id);
@@ -133,14 +227,20 @@ io.on('connection', (socket) => {
           p2Time: 600,
           currentPlayer: 1,
           players: [
-            { id: challenge.from, username: p1.username, side: 1 },
-            { id: challenge.to, username: p2.username, side: 2 }
+            { id: challenge.from, username: p1.username, side: 1, elo: p1.elo },
+            { id: challenge.to, username: p2.username, side: 2, elo: p2.elo }
           ]
         };
 
         matches.set(roomId, matchData);
-        socket.join(roomId);
-        io.to(challenge.from).to(challenge.to).emit('game_start', matchData);
+        
+        // Both players join the room
+        const p1Socket = io.sockets.sockets.get(challenge.from);
+        const p2Socket = io.sockets.sockets.get(challenge.to);
+        if (p1Socket) p1Socket.join(roomId);
+        if (p2Socket) p2Socket.join(roomId);
+
+        io.to(roomId).emit('game_start', matchData);
         
         // Start match timer
         matchData.timer = setInterval(() => {
@@ -154,13 +254,9 @@ io.on('connection', (socket) => {
           }
 
           if (m.p1Time <= 0 || m.p2Time <= 0) {
-            clearInterval(m.timer);
             const winnerSide = m.p1Time <= 0 ? 2 : 1;
-            io.to(roomId).emit('game_over', { 
-              winner: m.players.find(p => p.side === winnerSide).username,
-              reason: 'Time Out'
-            });
-            matches.delete(roomId);
+            const winner = m.players.find(p => p.side === winnerSide).username;
+            endGame(roomId, winner, 'Time Out');
           } else {
             io.to(roomId).emit('time_sync', { p1Time: m.p1Time, p2Time: m.p2Time });
           }
@@ -186,8 +282,31 @@ io.on('connection', (socket) => {
       match.currentPlayer = moveData.nextPlayer;
       // Immediate sync on move
       io.to(roomId).emit('time_sync', { p1Time: match.p1Time, p2Time: match.p2Time });
-      socket.broadcast.emit('opponent_move', moveData);
+      socket.broadcast.to(roomId).emit('opponent_move', moveData);
+      
+      if (moveData.isWin) {
+        endGame(roomId, moveData.isWin, 'Defeat');
+      }
     }
+  });
+
+  socket.on('resign', (roomId) => {
+    const match = matches.get(roomId);
+    if (match) {
+      const loser = onlineUsers.get(socket.id);
+      const winner = match.players.find(p => p.id !== socket.id);
+      if (loser && winner) {
+        endGame(roomId, winner.username, 'Resignation');
+      }
+    }
+  });
+
+  socket.on('offer_draw', (roomId) => {
+    socket.broadcast.to(roomId).emit('draw_offered');
+  });
+
+  socket.on('accept_draw', (roomId) => {
+    endGame(roomId, null, 'Mutual Agreement', true);
   });
 
   socket.on('leave_game', (roomId) => {

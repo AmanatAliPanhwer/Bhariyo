@@ -9,7 +9,7 @@ export default function PlayOnline({ socket, onChallenge }) {
 
   useEffect(() => {
     if (socket) {
-      socket.emit('register_online', { username: user.username, id: user.id });
+      socket.emit('register_online', { username: user.username, id: user.id, elo: user.elo });
       
       socket.on('online_users_update', (users) => {
         // Filter out self
@@ -52,6 +52,7 @@ export default function PlayOnline({ socket, onChallenge }) {
                   </div>
                   <div className="player-details">
                     <span className="player-name">{player.username}</span>
+                    <span className="player-elo">Rating: {player.elo || 1200}</span>
                     <span className="player-status">{player.status === 'AVAILABLE' ? 'Available' : 'In Game'}</span>
                   </div>
                 </div>

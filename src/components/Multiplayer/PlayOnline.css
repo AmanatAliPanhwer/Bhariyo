@@ -91,6 +91,12 @@
   font-size: 1.1rem;
 }
 
+.player-elo {
+  font-size: 0.9rem;
+  color: var(--brand-yellow);
+  font-weight: 700;
+}
+
 .player-status {
   font-size: 0.85rem;
   color: rgba(255, 255, 255, 0.4);

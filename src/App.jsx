@@ -36,7 +36,7 @@ import {
 const SOCKET_URL = 'http://localhost:5000';
 
 function App() {
-  const { user, loading: authLoading, logout } = useAuth();
+  const { user, loading: authLoading, logout, updateUser } = useAuth();
   const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard', 'game', 'learn', 'play_online'
   const [socket, setSocket] = useState(null);
   const [room, setRoom] = useState(null);
@@ -94,7 +94,11 @@ function App() {
       setSocket(newSocket);
 
       newSocket.on('connect', () => {
-        newSocket.emit('register_online', { username: user.username, id: user.id });
+        newSocket.emit('register_online', { username: user.username, id: user.id, elo: user.elo });
+      });
+
+      newSocket.on('stats_update', (updatedStats) => {
+        updateUser(updatedStats);
       });
 
       newSocket.on('game_start', (matchData) => {
@@ -522,7 +526,7 @@ function App() {
                 <div className="avatar-small">{opponent.username[0].toUpperCase()}</div>
                 <div className="player-name-badges">
                   <span className="player-name">{opponent.username}</span>
-                  <span className="rating-badge">1200</span>
+                  <span className="rating-badge">{opponent.elo || 1200}</span>
                 </div>
               </div>
               {isMultiplayer && <MatchTimer seconds={playerSide === 1 ? p2Time : p1Time} isActive={currentPlayer !== playerSide} />}
@@ -561,6 +565,7 @@ function App() {
                 <div className="avatar-small">{user.username[0].toUpperCase()}</div>
                 <div className="player-name-badges">
                   <span className="player-name">{user.username}</span>
+                  <span className="rating-badge">{user.elo || 1200}</span>
                   <span className="player-flag">🇵🇰</span>
                 </div>
               </div>
@@ -644,6 +649,11 @@ function App() {
                 <div className="modal-icon">🏆</div>
                 <h1>Game Over</h1>
                 <p>{winner === 'Draw' ? "It's a draw!" : `${winner} has won the match!`}</p>
+                {isMultiplayer && (
+                  <div className="elo-update-summary">
+                    <span className="current-rating">Your New Rating: <strong>{user.elo}</strong></span>
+                  </div>
+                )}
                 <div className="modal-actions">
                    <button className="btn-chess btn-chess-primary full-w" onClick={() => { resetGame(); setWinner(null); }}>
                       Play Again
