@@ -34,14 +34,36 @@ export default function GameStatus({
   unplacedPieces, 
   p1Count, 
   p2Count,
-  winner
+  winner,
+  moveHistory = [],
+  activeTab = 'Match Center'
 }) {
+
+  if (activeTab === 'Moves') {
+    return (
+      <div className="status-panel-minimal moves-panel">
+        <h3 className="moves-title">Move History</h3>
+        <div className="moves-list">
+          {moveHistory.length === 0 ? (
+            <div className="no-moves">No moves made yet</div>
+          ) : (
+            moveHistory.map((move, idx) => (
+              <div key={idx} className="move-item">
+                <span className="move-num">{idx + 1}.</span>
+                <span className="move-text">{move}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  }
 
   let instruction = '';
   if (winner) {
-    instruction = `Player ${winner} Wins!`;
+    instruction = `${winner} Wins!`;
   } else if (turnState === 'REMOVING_OPPONENT') {
-    instruction = 'Mill formed! Select a highlighted red opponent\'s piece to remove (Pieces in a mill are safe!).';
+    instruction = 'Mill formed! Select a highlighted red opponent\'s piece to remove.';
   } else if (gamePhase === 'PLACING') {
     instruction = 'Place a piece on an empty intersection.';
   } else if (turnState === 'IDLE') {
@@ -51,9 +73,7 @@ export default function GameStatus({
   }
 
   return (
-    <div className="status-panel">
-      {/* Removed the 'Bhariyo' title from here to avoid duplication with navbar */}
-      
+    <div className="status-panel-minimal">
       <div className="header-info">
         <div className="phase-badge">{gamePhase} PHASE</div>
         
@@ -69,29 +89,15 @@ export default function GameStatus({
         )}
       </div>
 
-      <div className="players-container">
-        {/* Often Player 2 (Black) is shown at the top like chess */}
-        <PlayerCard 
-          playerNum={2} 
-          isActive={currentPlayer === 2 && !winner} 
-          unplaced={unplacedPieces[2]} 
-          totalAlive={p2Count}
-          isPlacing={gamePhase === 'PLACING'}
-        />
-        
-        <div className="vs-divider">
-           <div className="vs-line"></div>
-           <span className="vs-text">VS</span>
-           <div className="vs-line"></div>
-        </div>
-
-        <PlayerCard 
-          playerNum={1} 
-          isActive={currentPlayer === 1 && !winner} 
-          unplaced={unplacedPieces[1]} 
-          totalAlive={p1Count}
-          isPlacing={gamePhase === 'PLACING'}
-        />
+      <div className="compact-stats-grid">
+         <div className="stat-item">
+            <span className="label">Unplaced</span>
+            <span className="value">{unplacedPieces[1]} | {unplacedPieces[2]}</span>
+         </div>
+         <div className="stat-item">
+            <span className="label">Total Alive</span>
+            <span className="value">{p1Count} | {p2Count}</span>
+         </div>
       </div>
     </div>
   );

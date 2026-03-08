@@ -1,26 +1,27 @@
 .board-outer-container {
+  flex: 0 1 auto;
   width: 100%;
-  max-width: 600px;
-  margin: 0 auto;
-  padding: 1.5rem;
-  background-color: var(--board-bg);
-  border-radius: 8px;
-  box-shadow: var(--panel-shadow);
-  border: 2px solid var(--panel-border);
-  transition: all 0.3s ease-out;
-}
-
-.board-mill-active {
-  border-color: var(--brand-yellow);
-  box-shadow: 0 0 15px rgba(245, 199, 54, 0.4), var(--panel-shadow);
+  max-width: 600px; /* Limit on Desktop */
+  width: min(90vw, 600px); /* Fluid on mobile */
+  aspect-ratio: 1 / 1;
+  padding: min(1.5rem, 4vw);
+  background-color: #2b2926;
+  border-radius: 4px;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.6);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .board-container {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 1;
-  background-color: var(--board-bg);
+  height: 100%;
+  background-color: #262421;
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.3);
   box-sizing: border-box;
+  overflow: visible;
 }
 
 .board-lines {
@@ -30,6 +31,7 @@
   width: 100%;
   height: 100%;
   pointer-events: none;
+  overflow: visible;
 }
 
 .mill-glow-line {
@@ -39,8 +41,8 @@
 /* Base node styling */
 .board-node {
   position: absolute;
-  width: 7%;
-  height: 7%;
+  width: 8%;
+  height: 8%;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background-color: transparent;
@@ -49,6 +51,15 @@
   display: flex;
   justify-content: center;
   align-items: center;
+  overflow: visible;
+}
+
+.empty-node::after {
+  content: '';
+  width: 4px;
+  height: 4px;
+  background-color: rgba(255, 255, 255, 0.15);
+  border-radius: 50%;
 }
 
 /* Make hit area slightly larger than visual node */

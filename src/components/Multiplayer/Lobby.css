@@ -1,0 +1,139 @@
+/* Lobby CSS - Chess.com Overhaul */
+.lobby-container {
+  padding: 2.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+  color: white;
+}
+
+.lobby-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.lobby-header h1 {
+  font-size: 2.25rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+
+.lobby-actions {
+  margin-bottom: 3rem;
+}
+
+.create-room-form {
+  display: flex;
+  gap: 1rem;
+  background: var(--card-bg);
+  padding: 1.5rem;
+  border-radius: 8px;
+  box-shadow: 0 8px 0 rgba(0, 0, 0, 0.1);
+}
+
+.create-room-form input {
+  flex: 1;
+  background: #3c3a34;
+  border: 2px solid transparent;
+  padding: 0.85rem 1rem;
+  border-radius: 4px;
+  color: white;
+  font-size: 1rem;
+}
+
+.create-room-form input:focus {
+  outline: none;
+  border-color: var(--brand-yellow);
+}
+
+.create-room-form button {
+  background: var(--brand-yellow);
+  color: #000;
+  border: none;
+  border-bottom: 4px solid var(--brand-yellow-dark);
+  padding: 0 2rem;
+  border-radius: 4px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.create-room-form button:active {
+  transform: translateY(2px);
+  border-bottom-width: 2px;
+}
+
+.room-list h2 {
+  margin-bottom: 1.5rem;
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.rooms-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.5rem;
+}
+
+.room-card {
+  padding: 1.5rem;
+  background: var(--card-bg);
+  border-radius: 8px;
+  box-shadow: 0 8px 0 rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  transition: all 0.1s ease;
+}
+
+.room-card:hover {
+  filter: brightness(1.05);
+}
+
+.room-info h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.room-info p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.join-btn {
+  background: #3c3a34;
+  color: white;
+  border: none;
+  border-bottom: 4px solid #2b2a24;
+  padding: 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 800;
+  transition: all 0.1s ease;
+}
+
+.join-btn:hover {
+  background: var(--brand-yellow);
+  color: #000;
+  border-color: var(--brand-yellow-dark);
+}
+
+.join-btn:active {
+  transform: translateY(2px);
+  border-bottom-width: 2px;
+}
+
+.no-rooms {
+  text-align: center;
+  padding: 4rem;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  border: 2px dashed rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.3);
+  font-weight: 700;
+}

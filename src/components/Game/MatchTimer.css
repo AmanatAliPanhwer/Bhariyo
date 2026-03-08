@@ -1,0 +1,41 @@
+.match-timer {
+  background: #3c3a34;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0.5rem 0.85rem;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: 'Montserrat', sans-serif;
+  font-weight: 800;
+  font-size: 1.1rem;
+  border-bottom: 3px solid rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease;
+  min-width: 90px;
+}
+
+.match-timer.active {
+  background: #fff;
+  color: #000;
+  border-bottom-color: #d1d1d1;
+}
+
+.match-timer.low {
+  background: #fa4132;
+  color: #fff;
+  border-bottom-color: #b32a1e;
+}
+
+.match-timer.low.active {
+  animation: pulse-red 1s infinite;
+}
+
+@keyframes pulse-red {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+.time-display {
+  letter-spacing: 0.5px;
+}

@@ -3,7 +3,7 @@ import { NODES } from '../gameLogic';
 import Piece from './Piece';
 import './Board.css';
 
-export default function Board({ board, onNodeClick, activeNode, highlightNodes, activeMills = [], removableNodes = [] }) {
+export default function Board({ board, onNodeClick, activeNode, highlightNodes = [], activeMills = [], removableNodes = [] }) {
   const isMillActive = activeMills.length > 0;
   // Flatten active mills list to check if a specific node is part of an active mill
   const activeMillNodes = activeMills.flat();
