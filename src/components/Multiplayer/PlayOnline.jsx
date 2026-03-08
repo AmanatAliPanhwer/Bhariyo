@@ -8,13 +8,15 @@ export default function PlayOnline({ supabase, channel }) {
   const { user } = useAuth();
 
   useEffect(() => {
+    let isMounted = true;
+
     if (channel) {
       const handlePresenceSync = () => {
+        if (!isMounted) return;
         const state = channel.presenceState();
         const users = [];
         
         Object.keys(state).forEach((key) => {
-          // Presence can have multiple sessions for the same user
           const presence = state[key][0];
           if (presence.username !== user.username) {
             users.push(presence);
@@ -25,12 +27,11 @@ export default function PlayOnline({ supabase, channel }) {
       };
 
       channel.on('presence', { event: 'sync' }, handlePresenceSync);
-      
-      // Initial sync
       handlePresenceSync();
 
       return () => {
-        channel.off('presence', { event: 'sync' }, handlePresenceSync);
+        isMounted = false;
+        // Supabase removes listeners when the channel is unsubscribed in App.jsx
       };
     }
   }, [channel, user.username]);
