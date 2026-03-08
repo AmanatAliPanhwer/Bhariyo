@@ -2,11 +2,11 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
+const supabase = require('./supabase');
 const authMiddleware = require('./middleware/auth');
 
 const app = express();
@@ -21,35 +21,7 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
-const db = new Database('bhariyo.db');
 const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
-
-// Initialize Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
-    wins INTEGER DEFAULT 0,
-    games_played INTEGER DEFAULT 0,
-    elo INTEGER DEFAULT 1200
-  )
-`);
-
-// Migrations for existing databases
-const migrations = [
-  'ALTER TABLE users ADD COLUMN wins INTEGER DEFAULT 0',
-  'ALTER TABLE users ADD COLUMN games_played INTEGER DEFAULT 0',
-  'ALTER TABLE users ADD COLUMN elo INTEGER DEFAULT 1200'
-];
-
-migrations.forEach(m => {
-  try {
-    db.exec(m);
-  } catch (e) {
-    // Column already exists or other error
-  }
-});
 
 // Elo Calculation Helper
 function calculateElo(ratingA, ratingB, scoreA, kFactor = 32) {
@@ -57,44 +29,62 @@ function calculateElo(ratingA, ratingB, scoreA, kFactor = 32) {
   return Math.round(ratingA + kFactor * (scoreA - expectedA));
 }
 
-function updatePlayerStats(userId, isWin, isDraw, opponentElo) {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!user) return null;
+async function updatePlayerStats(userId, isWin, isDraw, opponentElo) {
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', userId)
+    .single();
+
+  if (!user || fetchError) return null;
 
   const score = isWin ? 1 : (isDraw ? 0.5 : 0);
   const newElo = calculateElo(user.elo, opponentElo, score);
   
-  const stmt = db.prepare(`
-    UPDATE users 
-    SET elo = ?, 
-        wins = wins + ?, 
-        games_played = games_played + 1 
-    WHERE id = ?
-  `);
-  stmt.run(newElo, isWin ? 1 : 0, userId);
+  const { data: updatedUser, error: updateError } = await supabase
+    .from('users')
+    .update({ 
+      elo: newElo, 
+      wins: user.wins + (isWin ? 1 : 0), 
+      games_played: user.games_played + 1 
+    })
+    .eq('id', userId)
+    .select()
+    .single();
+
+  if (updateError) return null;
   
-  return { ...user, elo: newElo, wins: user.wins + (isWin ? 1 : 0), games_played: user.games_played + 1 };
+  return updatedUser;
 }
 
 // Auth Routes
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
   const hashedPassword = bcrypt.hashSync(password, 10);
   
   try {
-    const stmt = db.prepare('INSERT INTO users (username, password, elo) VALUES (?, ?, 1200)');
-    const result = stmt.run(username, hashedPassword);
-    const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET);
-    res.json({ token, user: { id: result.lastInsertRowid, username, elo: 1200, wins: 0, games_played: 0 } });
+    const { data, error } = await supabase
+      .from('users')
+      .insert([{ username, password: hashedPassword, elo: 1200 }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    const token = jwt.sign({ id: data.id, username }, JWT_SECRET);
+    res.json({ token, user: { id: data.id, username, elo: 1200, wins: 0, games_played: 0 } });
   } catch (err) {
-    res.status(400).json({ message: 'Username already exists' });
+    res.status(400).json({ message: 'Username already exists or registration failed' });
   }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const stmt = db.prepare('SELECT * FROM users WHERE username = ?');
-  const user = stmt.get(username);
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('username', username)
+    .single();
   
   if (user && bcrypt.compareSync(password, user.password)) {
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
@@ -113,9 +103,16 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-app.get('/api/profile', authMiddleware, (req, res) => {
-  const stmt = db.prepare('SELECT id, username, wins, games_played, elo FROM users WHERE id = ?');
-  const user = stmt.get(req.user.id);
+app.get('/api/profile', authMiddleware, async (req, res) => {
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('id, username, wins, games_played, elo')
+    .eq('id', req.user.id)
+    .single();
+    
+  if (error || !user) {
+    return res.status(404).json({ message: 'User not found' });
+  }
   res.json(user);
 });
 
@@ -138,7 +135,7 @@ io.on('connection', (socket) => {
     broadcastOnlineUsers();
   });
 
-  const endGame = (roomId, winnerUsername, reason, isDraw = false) => {
+  const endGame = async (roomId, winnerUsername, reason, isDraw = false) => {
     const match = matches.get(roomId);
     if (!match) return;
 
@@ -149,44 +146,57 @@ io.on('connection', (socket) => {
       const loserPlayer = match.players.find(p => p.username !== winnerUsername);
 
       if (winnerPlayer && loserPlayer) {
-        const winnerData = onlineUsers.get(winnerPlayer.id);
-        const loserData = onlineUsers.get(loserPlayer.id);
+        const winnerSocketId = Array.from(onlineUsers.entries()).find(([sid, u]) => u.username === winnerUsername)?.[0];
+        const loserSocketId = Array.from(onlineUsers.entries()).find(([sid, u]) => u.username === loserPlayer.username)?.[0];
+
+        const winnerData = onlineUsers.get(winnerSocketId);
+        const loserData = onlineUsers.get(loserSocketId);
 
         if (winnerData && loserData) {
-          const updatedWinner = updatePlayerStats(winnerData.id, true, false, loserData.elo);
-          const updatedLoser = updatePlayerStats(loserData.id, false, false, winnerData.elo);
+          const updatedWinner = await updatePlayerStats(winnerData.id, true, false, loserData.elo);
+          const updatedLoser = await updatePlayerStats(loserData.id, false, false, winnerData.elo);
 
           // Update onlineUsers cache
-          winnerData.elo = updatedWinner.elo;
-          loserData.elo = updatedLoser.elo;
-
-          io.to(winnerPlayer.id).emit('stats_update', updatedWinner);
-          io.to(loserPlayer.id).emit('stats_update', updatedLoser);
+          if (updatedWinner) {
+            winnerData.elo = updatedWinner.elo;
+            io.to(winnerSocketId).emit('stats_update', updatedWinner);
+          }
+          if (updatedLoser) {
+            loserData.elo = updatedLoser.elo;
+            io.to(loserSocketId).emit('stats_update', updatedLoser);
+          }
         }
       }
     } else {
       // Draw logic
       const p1 = match.players[0];
       const p2 = match.players[1];
-      const p1Data = onlineUsers.get(p1.id);
-      const p2Data = onlineUsers.get(p2.id);
+      const p1SocketId = Array.from(onlineUsers.entries()).find(([sid, u]) => u.username === p1.username)?.[0];
+      const p2SocketId = Array.from(onlineUsers.entries()).find(([sid, u]) => u.username === p2.username)?.[0];
+
+      const p1Data = onlineUsers.get(p1SocketId);
+      const p2Data = onlineUsers.get(p2SocketId);
 
       if (p1Data && p2Data) {
-        const updatedP1 = updatePlayerStats(p1Data.id, false, true, p2Data.elo);
-        const updatedP2 = updatePlayerStats(p2Data.id, false, true, p1Data.elo);
+        const updatedP1 = await updatePlayerStats(p1Data.id, false, true, p2Data.elo);
+        const updatedP2 = await updatePlayerStats(p2Data.id, false, true, p1Data.elo);
 
-        p1Data.elo = updatedP1.elo;
-        p2Data.elo = updatedP2.elo;
-
-        io.to(p1.id).emit('stats_update', updatedP1);
-        io.to(p2.id).emit('stats_update', updatedP2);
+        if (updatedP1) {
+          p1Data.elo = updatedP1.elo;
+          io.to(p1SocketId).emit('stats_update', updatedP1);
+        }
+        if (updatedP2) {
+          p2Data.elo = updatedP2.elo;
+          io.to(p2SocketId).emit('stats_update', updatedP2);
+        }
       }
     }
 
     io.to(roomId).emit('game_over', { winner: winnerUsername, reason, isDraw });
     
     match.players.forEach(p => {
-      const u = onlineUsers.get(p.id);
+      const socketId = Array.from(onlineUsers.entries()).find(([sid, u]) => u.username === p.username)?.[0];
+      const u = onlineUsers.get(socketId);
       if (u) u.status = 'AVAILABLE';
     });
 
@@ -243,7 +253,7 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('game_start', matchData);
         
         // Start match timer
-        matchData.timer = setInterval(() => {
+        matchData.timer = setInterval(async () => {
           const m = matches.get(roomId);
           if (!m) return;
 
@@ -256,7 +266,7 @@ io.on('connection', (socket) => {
           if (m.p1Time <= 0 || m.p2Time <= 0) {
             const winnerSide = m.p1Time <= 0 ? 2 : 1;
             const winner = m.players.find(p => p.side === winnerSide).username;
-            endGame(roomId, winner, 'Time Out');
+            await endGame(roomId, winner, 'Time Out');
           } else {
             io.to(roomId).emit('time_sync', { p1Time: m.p1Time, p2Time: m.p2Time });
           }
@@ -276,7 +286,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('move', ({ roomId, moveData }) => {
+  socket.on('move', async ({ roomId, moveData }) => {
     const match = matches.get(roomId);
     if (match) {
       match.currentPlayer = moveData.nextPlayer;
@@ -285,18 +295,18 @@ io.on('connection', (socket) => {
       socket.broadcast.to(roomId).emit('opponent_move', moveData);
       
       if (moveData.isWin) {
-        endGame(roomId, moveData.isWin, 'Defeat');
+        await endGame(roomId, moveData.isWin, 'Defeat');
       }
     }
   });
 
-  socket.on('resign', (roomId) => {
+  socket.on('resign', async (roomId) => {
     const match = matches.get(roomId);
     if (match) {
       const loser = onlineUsers.get(socket.id);
       const winner = match.players.find(p => p.id !== socket.id);
       if (loser && winner) {
-        endGame(roomId, winner.username, 'Resignation');
+        await endGame(roomId, winner.username, 'Resignation');
       }
     }
   });
@@ -305,8 +315,8 @@ io.on('connection', (socket) => {
     socket.broadcast.to(roomId).emit('draw_offered');
   });
 
-  socket.on('accept_draw', (roomId) => {
-    endGame(roomId, null, 'Mutual Agreement', true);
+  socket.on('accept_draw', async (roomId) => {
+    await endGame(roomId, null, 'Mutual Agreement', true);
   });
 
   socket.on('leave_game', (roomId) => {
