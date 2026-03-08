@@ -10,8 +10,9 @@ import ChallengeOverlay from './components/Multiplayer/ChallengeOverlay';
 import Dashboard from './components/Dashboard/Dashboard';
 import MatchTimer from './components/Game/MatchTimer';
 import GameSetup from './components/Game/GameSetup';
+import BotSelection from './components/Game/BotSelection';
 import { useAuth } from './contexts/AuthContext';
-import { findNewMills, checkWinList, ADJACENCY, isPhase3, canRemoveAnyPiece, MILLS } from './gameLogic';
+import { findNewMills, checkWinList, ADJACENCY, isPhase3, canRemoveAnyPiece, MILLS, getBotMove } from './gameLogic';
 import { io } from 'socket.io-client';
 import { 
   Trophy, 
@@ -42,6 +43,8 @@ function App() {
   const [room, setRoom] = useState(null);
   const [playerSide, setPlayerSide] = useState(null); // 1 or 2
   const [isMultiplayer, setIsMultiplayer] = useState(false);
+  const [isBotGame, setIsBotGame] = useState(false);
+  const [bot, setBot] = useState(null);
   const [incomingChallenge, setIncomingChallenge] = useState(null);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [activeTab, setActiveTab] = useState('Match Center');
@@ -76,6 +79,40 @@ function App() {
     }
     return () => clearInterval(interval);
   }, [isMultiplayer, currentView, currentPlayer, winner]);
+
+  // Bot Move Effect
+  useEffect(() => {
+    if (isBotGame && currentPlayer === 2 && !winner && currentView === 'game') {
+      const timer = setTimeout(() => {
+        if (turnState === 'SELECTED_PIECE' && activeNode !== null) {
+          // If we already selected a piece, we need to find WHERE to move it
+          const move = getBotMove(board, 2, gamePhase, 'IDLE', unplacedPieces, bot?.level);
+          if (move && typeof move === 'object' && move.from === activeNode) {
+            handleNodeClick(move.to);
+          } else {
+             // Bot might have changed its mind or state is weird, deselect
+             handleNodeClick(activeNode);
+          }
+          return;
+        }
+
+        const move = getBotMove(board, 2, gamePhase, turnState, unplacedPieces, bot?.level);
+        if (move !== null) {
+          if (turnState === 'REMOVING_OPPONENT') {
+            handleNodeClick(move);
+          } else if (gamePhase === 'PLACING') {
+            handleNodeClick(move);
+          } else if (gamePhase === 'PLAYING') {
+            if (turnState === 'IDLE') {
+              handleNodeClick(move.from);
+              // The next tick will handle the 'to' part because turnState will be SELECTED_PIECE
+            }
+          }
+        }
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [isBotGame, currentPlayer, turnState, gamePhase, winner, currentView, board, unplacedPieces, bot, activeNode]);
 
   // Handle local timeout
   useEffect(() => {
@@ -175,9 +212,26 @@ function App() {
 
   const handlePlayLocal = () => {
     setIsMultiplayer(false);
+    setIsBotGame(false);
+    setBot(null);
     setRoom(null);
     setPlayerSide(null);
     setCurrentView('game_setup');
+  };
+
+  const handlePlayBots = () => {
+    setCurrentView('play_bots');
+  };
+
+  const handleSelectBot = (selectedBot) => {
+    setBot(selectedBot);
+    setIsBotGame(true);
+    setIsMultiplayer(false);
+    setPlayerSide(1); // User is always player 1 vs bot for now
+    resetGame();
+    setP1Time(600);
+    setP2Time(600);
+    setCurrentView('game');
   };
 
   const handleStartLocalGame = (seconds) => {
@@ -287,7 +341,7 @@ function App() {
       
       if (gamePhase === 'PLAYING') {
         if (checkWinList(nextBoard, currentPlayer)) {
-          isWin = currentPlayer === 1 ? user.username : 'Opponent';
+          isWin = currentPlayer === 1 ? user.username : (isBotGame ? bot.name : 'Opponent');
         }
       }
       
@@ -384,7 +438,7 @@ function App() {
               nextMills = newMills;
             } else {
               if (checkWinList(nextBoard, currentPlayer)) {
-                isWin = currentPlayer === 1 ? user.username : 'Opponent';
+                isWin = currentPlayer === 1 ? user.username : (isBotGame ? bot.name : 'Opponent');
               } else {
                 nextTurn = 'IDLE';
                 nextPlayer = opponent;
@@ -422,6 +476,8 @@ function App() {
     socket?.emit('leave_game', room?.id);
     setRoom(null);
     setIsMultiplayer(false);
+    setIsBotGame(false);
+    setBot(null);
     setCurrentView('dashboard');
     setIsFocusMode(false);
     setP1Time(600);
@@ -461,7 +517,9 @@ function App() {
     });
   }
 
-  const opponent = isMultiplayer ? room.players.find(p => p.id !== socket?.id) : { username: 'Player 2' };
+  const opponent = isMultiplayer 
+    ? room.players.find(p => p.id !== socket?.id) 
+    : (isBotGame ? { username: bot.name, elo: bot.rating, avatar: bot.avatar } : { username: 'Player 2' });
 
   const renderContent = () => {
     if (currentView === 'dashboard') {
@@ -469,6 +527,7 @@ function App() {
         <Dashboard 
           onPlayLocal={handlePlayLocal} 
           onPlayOnline={handlePlayOnline}
+          onPlayBots={handlePlayBots}
           onLearnClick={() => setCurrentView('learn')}
           onPuzzlesClick={() => setCurrentView('puzzles')}
         />
@@ -481,6 +540,9 @@ function App() {
     }
     if (currentView === 'play_online') {
       return <PlayOnline socket={socket} />;
+    }
+    if (currentView === 'play_bots') {
+      return <BotSelection onSelectBot={handleSelectBot} onBack={() => setCurrentView('dashboard')} />;
     }
 
     return (
@@ -523,7 +585,13 @@ function App() {
           {!isFocusMode && (
             <div className="player-strip opponent-strip">
               <div className="player-meta">
-                <div className="avatar-small">{opponent.username[0].toUpperCase()}</div>
+                <div className="avatar-small">
+                  {opponent.avatar ? (
+                    <img src={opponent.avatar} alt="" className="player-img-avatar" />
+                  ) : (
+                    opponent.username[0].toUpperCase()
+                  )}
+                </div>
                 <div className="player-name-badges">
                   <span className="player-name">{opponent.username}</span>
                   <span className="rating-badge">{opponent.elo || 1200}</span>
@@ -537,10 +605,11 @@ function App() {
           <div className="board-container-wrapper">
             {!isFocusMode && (
               <div className="board-sidebar-controls left">
-                   <button className="icon-btn" title="Focus Mode" onClick={() => setIsFocusMode(true)}>
+                   <button className="icon-btn mobile-hide" title="Focus Mode" onClick={() => setIsFocusMode(true)}>
                       <Maximize2 size={20} />
                    </button>
               </div>
+
             )}
 
             <Board 
@@ -562,7 +631,13 @@ function App() {
           {!isFocusMode && (
             <div className="player-strip self-strip">
               <div className="player-meta">
-                <div className="avatar-small">{user.username[0].toUpperCase()}</div>
+                <div className="avatar-small">
+                  {user.avatar ? (
+                    <img src={user.avatar} alt="" className="player-img-avatar" />
+                  ) : (
+                    user.username[0].toUpperCase()
+                  )}
+                </div>
                 <div className="player-name-badges">
                   <span className="player-name">{user.username}</span>
                   <span className="rating-badge">{user.elo || 1200}</span>
@@ -723,6 +798,10 @@ function App() {
                 <button onClick={handlePlayOnline} className="menu-item">
                   <Gamepad2 size={18} />
                   <span>Play Online</span>
+                </button>
+                <button onClick={handlePlayBots} className="menu-item">
+                  <Sword size={18} />
+                  <span>Play Bots</span>
                 </button>
                 <button onClick={handlePlayLocal} className="menu-item">
                   <Users size={18} />

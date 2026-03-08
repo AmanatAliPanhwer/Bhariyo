@@ -274,6 +274,19 @@ function InteractiveLesson({ lesson, onBack, onNextLesson, isMuted, onToggleMute
     speak("Great move!");
   };
 
+  const getHighlights = () => {
+    if (success || !step) return [];
+    if (step.highlightNodes) return step.highlightNodes;
+    const exp = step.expected;
+    if (exp.type === 'PLACE') return [exp.nodeId];
+    if (exp.type === 'MOVE') {
+      if (activeNode === null) return [exp.fromId];
+      return [exp.toId];
+    }
+    if (exp.type === 'REMOVE') return [exp.nodeId];
+    return [];
+  };
+
   return (
     <div className="interactive-lesson-layout">
       {/* Left Column: The Board container */}
@@ -283,7 +296,7 @@ function InteractiveLesson({ lesson, onBack, onNextLesson, isMuted, onToggleMute
             board={board}
             onNodeClick={handleNodeClick}
             activeNode={activeNode}
-            highlightNodes={step.highlightNodes || []}
+            highlightNodes={getHighlights()}
             activeMills={step.activeMills || []}
             removableNodes={step.removableNodes || []}
           />
@@ -415,7 +428,7 @@ export default function Learn({ onPlayClick }) {
   const previewBoard = previewLesson.steps[0].board;
 
   return (
-    <div className="interactive-lesson-layout">
+    <div className="interactive-lesson-layout selection-view">
       {/* Left Column: Preview Board */}
       <div className="lesson-left-col">
         <div className="interactive-board-wrapper full-size-board">

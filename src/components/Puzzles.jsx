@@ -146,6 +146,16 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
     }, 1200);
   };
 
+  const getHighlights = () => {
+    if (success) return [];
+    if (puzzle.expected.type === 'PLACE') return [puzzle.expected.nodeId];
+    if (puzzle.expected.type === 'MOVE') {
+      if (activeNode === null) return [puzzle.expected.fromId];
+      return [puzzle.expected.toId];
+    }
+    return [];
+  };
+
   return (
     <div className="interactive-lesson-layout">
       {/* Left Column: Board */}
@@ -155,7 +165,7 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
             board={board}
             onNodeClick={handleNodeClick}
             activeNode={activeNode}
-            highlightNodes={success ? [] : (activeNode !== null ? [puzzle.expected.toId] : [])}
+            highlightNodes={getHighlights()}
           />
         </div>
       </div>
@@ -275,7 +285,7 @@ export default function Puzzles({ onBackToDashboard }) {
   const previewBoard = previewPuzzle.board;
 
   return (
-    <div className="interactive-lesson-layout">
+    <div className="interactive-lesson-layout selection-view">
       {/* Left Column: Preview Board */}
       <div className="lesson-left-col">
         <div className="interactive-board-wrapper full-size-board">

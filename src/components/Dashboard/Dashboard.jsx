@@ -18,7 +18,10 @@ const learnBoard = Array(24).fill(null);
 const puzzlesBoard = Array(24).fill(null);
 [16, 17, 18, 9, 1].forEach(i => puzzlesBoard[i] = 1);
 
-export default function Dashboard({ onPlayLocal, onPlayOnline, onLearnClick, onPuzzlesClick }) {
+const botsBoard = Array(24).fill(null);
+[0, 1, 2, 8, 9, 10, 16, 17, 18].forEach(i => botsBoard[i] = (i % 2 === 0 ? 1 : 2));
+
+export default function Dashboard({ onPlayLocal, onPlayOnline, onPlayBots, onLearnClick, onPuzzlesClick }) {
   const { user } = useAuth();
 
   return (
@@ -56,6 +59,15 @@ export default function Dashboard({ onPlayLocal, onPlayOnline, onLearnClick, onP
              </div>
              <div className="card-footer">
                 <span>Play Online</span>
+             </div>
+          </button>
+
+          <button className="square-card glass-morphism" onClick={onPlayBots}>
+             <div className="card-preview">
+                <MiniBoard board={botsBoard} />
+             </div>
+             <div className="card-footer">
+                <span>Play Bots</span>
              </div>
           </button>
 

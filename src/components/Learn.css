@@ -177,6 +177,12 @@
   overflow: hidden;
 }
 
+@media (max-width: 900px) {
+  .selection-view .lesson-left-col {
+    display: none;
+  }
+}
+
 @media (min-width: 900px) {
   .lesson-right-col {
     width: 380px;
