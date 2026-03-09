@@ -841,8 +841,8 @@ function App() {
                   turnState={turnState}
                   gamePhase={gamePhase}
                   unplacedPieces={unplacedPieces}
-                  p1Count={unplacedPieces[1] + board.filter(p => p === 1).length}
-                  p2Count={unplacedPieces[2] + board.filter(p => p === 2).length}
+                  p1Count={p1Count}
+                  p2Count={p2Count}
                   winner={winner}
                   moveHistory={moveHistory}
                   activeTab={activeTab}
