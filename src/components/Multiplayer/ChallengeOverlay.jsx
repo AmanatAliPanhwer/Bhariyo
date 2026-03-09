@@ -23,13 +23,13 @@ export default function ChallengeOverlay({ challenge, onAccept, onDecline }) {
         <div className="challenge-actions">
           <button 
             className="btn-chess btn-chess-primary accept-btn"
-            onClick={() => onAccept(challenge.challengeId)}
+            onClick={() => onAccept(challenge)}
           >
             Accept
           </button>
           <button 
             className="btn-chess btn-chess-secondary decline-btn"
-            onClick={() => onDecline(challenge.challengeId)}
+            onClick={() => onDecline(challenge)}
           >
             Decline
           </button>

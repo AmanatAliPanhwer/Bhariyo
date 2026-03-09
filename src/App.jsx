@@ -60,21 +60,28 @@ function App() {
   const [activeMills, setActiveMills] = useState([]);
   const [winner, setWinner] = useState(null);
   const [moveHistory, setMoveHistory] = useState([]);
+  const [pendingBotMove, setPendingBotMove] = useState(null);
 
   // Timer states
   const [p1Time, setP1Time] = useState(600);
   const [p2Time, setP2Time] = useState(600);
 
+  // Derived counts
+  const p1Count = unplacedPieces[1] + board.filter(p => p === 1).length;
+  const p2Count = unplacedPieces[2] + board.filter(p => p === 2).length;
+
   // Use refs to avoid closure issues in callbacks
   const roomRef = useRef(null);
   const playerSideRef = useRef(null);
   const userRef = useRef(null);
+  const winnerRef = useRef(null);
 
   useEffect(() => {
     roomRef.current = room;
     playerSideRef.current = playerSide;
     userRef.current = user;
-  }, [room, playerSide, user]);
+    winnerRef.current = winner;
+  }, [room, playerSide, user, winner]);
 
   // Local timer effect
   useEffect(() => {
@@ -88,7 +95,7 @@ function App() {
         }
 
         // If it's my turn in multiplayer and I run out of time
-        if (isMultiplayer && roomRef.current && !winner) {
+        if (isMultiplayer && roomRef.current && !winnerRef.current) {
            const myTime = playerSideRef.current === 1 ? p1Time : p2Time;
            if (myTime <= 1) { // 1 to account for lag
              handleTimeout();
@@ -100,14 +107,15 @@ function App() {
   }, [currentView, currentPlayer, winner, isMultiplayer, p1Time, p2Time]);
 
   const handleTimeout = async () => {
-    if (winner) return;
+    if (winnerRef.current) return;
     const opponent = roomRef.current.players.find(p => p.username !== userRef.current.username);
     await finalizeGame(opponent.username, 'Time Out');
   };
 
   const finalizeGame = async (winUser, reason, isDraw = false) => {
-    if (winner) return;
+    if (winnerRef.current) return;
     setWinner(winUser || (isDraw ? 'Draw' : 'Unknown'));
+    updateLobbyStatus('AVAILABLE');
     
     if (isMultiplayer && roomRef.current) {
       const me = userRef.current;
@@ -140,6 +148,41 @@ function App() {
       }
     }
   };
+
+  // Bot logic effect
+  useEffect(() => {
+    if (isBotGame && !winner && currentPlayer === 2 && !pendingBotMove) {
+      const botMoveTimer = setTimeout(() => {
+        const level = bot?.level || 'BEGINNER';
+        const move = getBotMove(board, 2, gamePhase, turnState, unplacedPieces, level);
+        
+        if (move !== null) {
+          if (typeof move === 'number') {
+            handleNodeClick(move);
+          } else {
+            // It's a move from -> to
+            setPendingBotMove(move);
+            handleNodeClick(move.from);
+          }
+        }
+      }, 1000);
+      return () => clearTimeout(botMoveTimer);
+    }
+  }, [isBotGame, winner, currentPlayer, turnState, board, gamePhase, unplacedPieces, bot, pendingBotMove]);
+
+  // Bot move completion effect
+  useEffect(() => {
+    if (pendingBotMove && turnState === 'SELECTED_PIECE' && activeNode === pendingBotMove.from) {
+      const timer = setTimeout(() => {
+        handleNodeClick(pendingBotMove.to);
+        setPendingBotMove(null);
+      }, 600);
+      return () => clearTimeout(timer);
+    } else if (pendingBotMove && turnState === 'IDLE' && activeNode === null) {
+       // Bot move might have been aborted or something, clear it
+       setPendingBotMove(null);
+    }
+  }, [pendingBotMove, turnState, activeNode]);
 
   // Initialize Supabase Realtime
   useEffect(() => {
@@ -193,6 +236,18 @@ function App() {
     }
   }, [user]);
 
+  const updateLobbyStatus = async (status) => {
+    if (channel && user) {
+      await channel.track({
+        username: user.username,
+        id: user.id,
+        elo: user.elo || 1200,
+        status: status,
+        online_at: new Date().toISOString(),
+      });
+    }
+  };
+
   const startMultiplayerGame = (roomData, mySide) => {
     const gameChannel = supabase.channel(`room_${roomData.id}`);
 
@@ -232,6 +287,7 @@ function App() {
     setP1Time(600);
     setP2Time(600);
     resetGame();
+    updateLobbyStatus('IN_GAME');
   };
 
   const handleAcceptChallenge = (challenge) => {
@@ -282,7 +338,7 @@ function App() {
   };
 
   const handleResign = async () => {
-    if (!winner && window.confirm('Are you sure you want to resign?')) {
+    if (!winnerRef.current && window.confirm('Are you sure you want to resign?')) {
       if (isMultiplayer && room?.channel) {
         room.channel.send({
           type: 'broadcast',
@@ -298,7 +354,7 @@ function App() {
   };
 
   const handleOfferDraw = () => {
-    if (!winner) {
+    if (!winnerRef.current) {
       if (isMultiplayer && room?.channel) {
         room.channel.send({
           type: 'broadcast',
@@ -325,12 +381,13 @@ function App() {
   };
 
   const handleMoveImpact = useCallback((moveData, isFromOpponent = false) => {
-    const { boardState, unplacedState, playerMoved, nextTurnState, nextMills, nextPlayer, isWin, type, nodeId, fromNode } = moveData;
+    const { boardState, unplacedState, playerMoved, nextTurnState, nextMills, nextPlayer, isWin, type, nodeId, fromNode, nextPhase } = moveData;
 
     setBoard(boardState);
     setUnplacedPieces(unplacedState);
     setCurrentPlayer(nextPlayer);
     setTurnState(nextTurnState);
+    if (nextPhase) setGamePhase(nextPhase);
     setActiveMills(nextMills || []);
     if (isWin) finalizeGame(isWin, 'Defeat');
     if (nextTurnState === 'IDLE') setActiveNode(null);
@@ -338,7 +395,7 @@ function App() {
     if (isFromOpponent) {
       addMoveToHistory(playerMoved, fromNode, nodeId, type);
     }
-  }, [user, room, isMultiplayer]);
+  }, []);
 
   const addMoveToHistory = (player, from, to, type) => {
     const label = (idx) => idx === null ? '' : idx + 1;
@@ -364,7 +421,9 @@ function App() {
     let nextTurn = turnState;
     let nextPlayer = currentPlayer;
     let nextMills = [];
+    let nextPhaseValue = gamePhase;
     let isWin = null;
+
     if (turnState === 'REMOVING_OPPONENT') {
       if (clickedPlayer !== opponent) return;
       
@@ -388,6 +447,10 @@ function App() {
       if (!isWin) {
         nextTurn = 'IDLE';
         nextPlayer = opponent;
+        if (nextUnplaced[1] === 0 && nextUnplaced[2] === 0) {
+          nextPhaseValue = 'PLAYING';
+          setGamePhase('PLAYING');
+        }
       }
 
       const moveData = {
@@ -398,7 +461,8 @@ function App() {
         playerMoved: currentPlayer,
         nextTurnState: nextTurn,
         nextPlayer,
-        isWin
+        isWin,
+        nextPhase: nextPhaseValue
       };
 
       setBoard(nextBoard);
@@ -423,6 +487,10 @@ function App() {
         nextMills = newMills;
       } else {
         nextPlayer = opponent;
+        if (nextUnplaced[1] === 0 && nextUnplaced[2] === 0) {
+          nextPhaseValue = 'PLAYING';
+          setGamePhase('PLAYING');
+        }
       }
 
       const moveData = {
@@ -434,7 +502,8 @@ function App() {
         nextTurnState: nextTurn,
         nextMills: nextMills,
         nextPlayer,
-        isWin: null
+        isWin: null,
+        nextPhase: nextPhaseValue
       };
 
       setBoard(nextBoard);
@@ -495,7 +564,8 @@ function App() {
               nextTurnState: nextTurn,
               nextMills: nextMills,
               nextPlayer,
-              isWin
+              isWin,
+              nextPhase: nextPhaseValue
             };
 
             setBoard(nextBoard);
@@ -512,10 +582,12 @@ function App() {
     }
   };
 
+
   const handleQuitGame = () => {
     if (isMultiplayer && room?.channel) {
        room.channel.unsubscribe();
     }
+    updateLobbyStatus('AVAILABLE');
     setRoom(null);
     setIsMultiplayer(false);
     setIsBotGame(false);
