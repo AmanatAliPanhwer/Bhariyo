@@ -50,6 +50,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('Match Center');
   const [showMatchCenter, setShowMatchCenter] = useState(false); 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState([]);
   
   const [board, setBoard] = useState(Array(24).fill(null));
   const [currentPlayer, setCurrentPlayer] = useState(1);
@@ -197,7 +198,35 @@ function App() {
 
       lobbyChannel
         .on('presence', { event: 'sync' }, () => {
-          // PlayOnline will handle the user list from presence
+          const state = lobbyChannel.presenceState();
+          const users = [];
+          Object.keys(state).forEach((key) => {
+            const presenceList = state[key];
+            if (presenceList && presenceList.length > 0) {
+              const presence = presenceList[0];
+              if (presence.username && presence.username !== user.username) {
+                users.push(presence);
+              }
+            }
+          });
+          setOnlineUsers(users);
+        })
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          if (newPresences && newPresences.length > 0) {
+            const newUser = newPresences[0];
+            if (newUser.username && newUser.username !== user.username) {
+              setOnlineUsers(prev => {
+                const filtered = prev.filter(u => u.username !== newUser.username);
+                return [...filtered, newUser];
+              });
+            }
+          }
+        })
+        .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+           if (leftPresences && leftPresences.length > 0) {
+             const leftUser = leftPresences[0];
+             setOnlineUsers(prev => prev.filter(u => u.username !== leftUser.username));
+           }
         })
         .on('broadcast', { event: 'challenge' }, (payload) => {
           if (payload.payload.to === user.username) {
@@ -688,7 +717,7 @@ function App() {
       return <GameSetup onStart={handleStartLocalGame} onBack={() => setCurrentView('dashboard')} />;
     }
     if (currentView === 'play_online') {
-      return <PlayOnline supabase={supabase} channel={channel} />;
+      return <PlayOnline supabase={supabase} channel={channel} onlineUsers={onlineUsers} />;
     }
     if (currentView === 'play_bots') {
       return <BotSelection onSelectBot={handleSelectBot} onBack={() => setCurrentView('dashboard')} />;

@@ -3,38 +3,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Sword, User } from 'lucide-react';
 import './PlayOnline.css';
 
-export default function PlayOnline({ supabase, channel }) {
-  const [onlineUsers, setOnlineUsers] = useState([]);
+export default function PlayOnline({ supabase, channel, onlineUsers }) {
   const { user } = useAuth();
-
-  useEffect(() => {
-    let isMounted = true;
-
-    if (channel) {
-      const handlePresenceSync = () => {
-        if (!isMounted) return;
-        const state = channel.presenceState();
-        const users = [];
-        
-        Object.keys(state).forEach((key) => {
-          const presence = state[key][0];
-          if (presence.username !== user.username) {
-            users.push(presence);
-          }
-        });
-        
-        setOnlineUsers(users);
-      };
-
-      channel.on('presence', { event: 'sync' }, handlePresenceSync);
-      handlePresenceSync();
-
-      return () => {
-        isMounted = false;
-        // Supabase removes listeners when the channel is unsubscribed in App.jsx
-      };
-    }
-  }, [channel, user.username]);
 
   const sendChallenge = (targetUser) => {
     const challengeId = Math.random().toString(36).substring(7);
