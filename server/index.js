@@ -142,26 +142,105 @@ async function trainBots() {
   }
 }
 
+const ADAPTIVE_BOTS = ['Amanat', 'Mazher', 'Hasnain', 'Umair'];
+
+// Get personalized bot stats for a user
+app.get('/api/bot/adaptive/:botName', authMiddleware, async (req, res) => {
+  const { botName } = req.params;
+  const userId = req.user.id;
+
+  try {
+    let { data: stats, error } = await supabase
+      .from('adaptive_bot_stats')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('bot_name', botName)
+      .single();
+
+    if (error && error.code === 'PGRST116') {
+      // Not found, create default entry
+      const { data: newStats, error: createError } = await supabase
+        .from('adaptive_bot_stats')
+        .insert([{ user_id: userId, bot_name: botName }])
+        .select()
+        .single();
+      if (createError) throw createError;
+      stats = newStats;
+    }
+
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch adaptive bot', error: err.message });
+  }
+});
+
+// Internal function to perform RL on a specific adaptive bot
+async function reinforceAdaptiveBot(userId, botName, wonAgainstPlayer, moves) {
+  try {
+    const { data: stats } = await supabase
+      .from('adaptive_bot_stats')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('bot_name', botName)
+      .single();
+
+    if (!stats) return;
+
+    let weights = stats.weights;
+    let rating = stats.rating;
+
+    // 1. Update Rating (Bot Elo)
+    const kFactor = 32;
+    const expectedBot = 1 / (1 + Math.pow(10, (200 - rating) / 400)); // Simplified: assuming player is near base
+    const score = wonAgainstPlayer ? 1 : 0;
+    rating = Math.min(3200, Math.max(0, Math.round(rating + kFactor * (score - expectedBot))));
+
+    // 2. Adjust Weights (Reinforcement Learning)
+    // We look at the last moves to see what worked
+    const criticalMoves = moves.slice(-10);
+    const multiplier = wonAgainstPlayer ? 1 : -1;
+    
+    weights.material = Math.max(100, Math.min(400, weights.material + (0.5 * multiplier)));
+    weights.mills = Math.max(50, Math.min(250, weights.mills + (1.0 * multiplier)));
+    weights.mobility = Math.max(5, Math.min(50, weights.mobility + (0.2 * multiplier)));
+
+    await supabase
+      .from('adaptive_bot_stats')
+      .update({ 
+        weights, 
+        rating, 
+        games_played: stats.games_played + 1 
+      })
+      .eq('user_id', userId)
+      .eq('bot_name', botName);
+
+  } catch (err) {
+    console.error('Adaptive RL failed:', err);
+  }
+}
+
 app.post('/api/game/end', authMiddleware, async (req, res) => {
   const { winnerId, loserId, isDraw, winnerElo, loserElo, gameData } = req.body;
   
   try {
-    // ... (Elo logic)
-    const isValidWinner = winnerId && winnerId !== 'bot' && winnerId !== 'local';
-    const isValidLoser = loserId && loserId !== 'bot' && loserId !== 'local';
+    // 1. Regular Elo Update logic
+    const isValidWinner = winnerId && winnerId !== 'bot' && winnerId !== 'local' && typeof winnerId === 'number';
+    const isValidLoser = loserId && loserId !== 'bot' && loserId !== 'local' && typeof loserId === 'number';
     const isMultiplayer = gameData?.mode === 'multiplayer';
+    const isBotGame = gameData?.mode === 'bot';
 
     let result = {};
     if (isMultiplayer && isValidWinner && isValidLoser) {
-      if (isDraw) {
-        const p1 = await updatePlayerStats(winnerId, false, true, loserElo);
-        const p2 = await updatePlayerStats(loserId, false, true, winnerElo);
-        result = { p1, p2 };
-      } else {
-        const winner = await updatePlayerStats(winnerId, true, false, loserElo);
-        const loser = await updatePlayerStats(loserId, false, false, winnerElo);
-        result = { winner, loser };
-      }
+        // ... (existing Elo logic)
+        if (isDraw) {
+          const p1 = await updatePlayerStats(winnerId, false, true, loserElo);
+          const p2 = await updatePlayerStats(loserId, false, true, winnerElo);
+          result = { p1, p2 };
+        } else {
+          const winner = await updatePlayerStats(winnerId, true, false, loserElo);
+          const loser = await updatePlayerStats(loserId, false, false, winnerElo);
+          result = { winner, loser };
+        }
     }
 
     // 2. Save detailed game data
@@ -178,10 +257,14 @@ app.post('/api/game/end', authMiddleware, async (req, res) => {
         created_at: new Date().toISOString()
       }]);
 
-      // AUTO-TRAIN TRIGGER
-      newGamesCount++;
-      if (newGamesCount >= 50) {
-        trainBots();
+      // 3. SPECIAL: Adaptive Bot Reinforcement
+      if (isBotGame && ADAPTIVE_BOTS.includes(gameData.opponent)) {
+        const botWon = winnerId === 'bot';
+        await reinforceAdaptiveBot(req.user.id, gameData.opponent, botWon, gameData.moves);
+      } else {
+        // Regular bots auto-train trigger
+        newGamesCount++;
+        if (newGamesCount >= 50) trainBots();
       }
     }
 
@@ -250,6 +333,31 @@ app.post('/api/bot/train', authMiddleware, async (req, res) => {
     res.json({ message: 'Learning complete', newWeights: botWeights });
   } catch (error) {
     res.status(500).json({ message: 'Learning failed', error: error.message });
+  }
+});
+
+// Reset personalized bot stats
+app.post('/api/bot/adaptive/reset', authMiddleware, async (req, res) => {
+  const { botName } = req.body;
+  const userId = req.user.id;
+
+  try {
+    const { data, error } = await supabase
+      .from('adaptive_bot_stats')
+      .update({ 
+        rating: 200, 
+        games_played: 0,
+        weights: { material: 200, mills: 100, potentialMills: 50, doublePotentialMills: 80, mobility: 10, blocked: 30 }
+      })
+      .eq('user_id', userId)
+      .eq('bot_name', botName)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ message: 'Bot memory reset successfully', stats: data });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to reset bot', error: err.message });
   }
 });
 

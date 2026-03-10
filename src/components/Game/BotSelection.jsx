@@ -1,9 +1,25 @@
 import React, { useState } from 'react';
-import { ChevronRight, Lock, User, Sword, MessageSquare, Trophy, ChevronLeft, ChevronDown } from 'lucide-react';
+import { 
+  ChevronRight, 
+  Lock, 
+  User, 
+  Sword, 
+  MessageSquare, 
+  Trophy, 
+  ChevronLeft, 
+  ChevronDown, 
+  Settings 
+} from 'lucide-react';
 import MiniBoard from '../Dashboard/MiniBoard';
 import './BotSelection.css';
 
 const BOTS = {
+  Adaptive: [
+    { id: 'amanat', name: 'Amanat', rating: 200, avatar: '/usman.png', quote: "I will study your every move, player.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'mazher', name: 'Mazher', rating: 200, avatar: '/Murtaza.png', quote: "The more we play, the better I understand you.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'hasnain', name: 'Hasnain', rating: 200, avatar: '/Deepak.png', quote: "Your strategies won't work twice against me.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'umair', name: 'Umair', rating: 200, avatar: '/Naresh.png', quote: "I am your shadow on the board.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+  ],
   Beginner: [
     { id: 'gulloo', name: 'Gulloo', rating: 250, avatar: '/gulloo.png', quote: "Ada, I'm just learning. Be gentle!", level: 'NOOB' },
     { id: 'pushpa', name: 'Pushpa', rating: 400, avatar: '/Puspha.png', quote: "The board looks like a beautiful ralli!", level: 'NOOB' },
@@ -31,10 +47,21 @@ const previewBoard = Array(24).fill(null);
     if (i < 24) previewBoard[i] = (i % 2 === 0 ? 1 : 2);
 });
 
-export default function BotSelection({ onSelectBot, onBack }) {
-  const [selectedBot, setSelectedBot] = useState(BOTS.Beginner[0]);
+export default function BotSelection({ onSelectBot, onBack, adaptiveStats, onResetBot, onPreviewBot }) {
+  const [selectedBot, setSelectedBot] = useState(BOTS.Adaptive[0]);
   const [expandedCategory, setExpandedCategory] = useState('Beginner');
   const [hoveredBotId, setHoveredBotId] = useState(null);
+  const [showLab, setShowLab] = useState(false);
+
+  // Initial fetch for the default selected bot
+  React.useEffect(() => {
+    if (onPreviewBot) onPreviewBot(BOTS.Adaptive[0]);
+  }, []);
+
+  const handleBotClick = (bot) => {
+    setSelectedBot(bot);
+    if (onPreviewBot) onPreviewBot(bot);
+  };
 
   const renderAvatar = (bot, size = 'small') => {
     const isImage = bot.avatar.startsWith('/');
@@ -80,6 +107,11 @@ export default function BotSelection({ onSelectBot, onBack }) {
                <div className="hero-name-row">
                   <span className="hero-name">{selectedBot.name}</span>
                   <span className="hero-rating">({selectedBot.rating})</span>
+                  {selectedBot.type === 'ADAPTIVE' && (
+                    <button className="bot-settings-btn" onClick={() => setShowLab(true)} title="Intelligence Lab">
+                      <Settings size={20} />
+                    </button>
+                  )}
                </div>
                <div className="hero-quote-box">
                   <MessageSquare size={14} className="quote-icon" />
@@ -87,6 +119,74 @@ export default function BotSelection({ onSelectBot, onBack }) {
                </div>
             </div>
           </div>
+          
+          {showLab && selectedBot.type === 'ADAPTIVE' && (
+            <div className="lab-overlay" onClick={() => setShowLab(false)}>
+              <div className="lab-modal glass-morphism" onClick={e => e.stopPropagation()}>
+                <div className="lab-modal-header">
+                  <h2>{selectedBot.name}'s Intelligence Lab</h2>
+                  <button className="close-lab-btn" onClick={() => setShowLab(false)}>×</button>
+                </div>
+                
+                <div className="bot-intelligence-lab-content">
+                  {!adaptiveStats ? (
+                    <div className="lab-loading">Analyzing Brain Patterns...</div>
+                  ) : (
+                    <>
+                      <div className="lab-stats-summary">
+                        <div className="stat-pill">
+                          <span className="label">Games Studied</span>
+                          <span className="value">{adaptiveStats.games_played}</span>
+                        </div>
+                        <div className="stat-pill">
+                          <span className="label">Current Elo</span>
+                          <span className="value">{selectedBot.rating}</span>
+                        </div>
+                      </div>
+                      
+                      <div className="weights-grid">
+                        <div className="weight-bar-item">
+                          <div className="weight-info">
+                            <span>Material Priority</span>
+                            <span>{Math.round(adaptiveStats.weights.material)}</span>
+                          </div>
+                          <div className="bar-bg"><div className="bar-fill" style={{ width: `${(adaptiveStats.weights.material / 400) * 100}%` }}></div></div>
+                        </div>
+                        <div className="weight-bar-item">
+                          <div className="weight-info">
+                            <span>Mill Aggression</span>
+                            <span>{Math.round(adaptiveStats.weights.mills)}</span>
+                          </div>
+                          <div className="bar-bg"><div className="bar-fill" style={{ width: `${(adaptiveStats.weights.mills / 250) * 100}%` }}></div></div>
+                        </div>
+                        <div className="weight-bar-item">
+                          <div className="weight-info">
+                            <span>Board Mobility</span>
+                            <span>{Math.round(adaptiveStats.weights.mobility)}</span>
+                          </div>
+                          <div className="bar-bg"><div className="bar-fill" style={{ width: `${(adaptiveStats.weights.mobility / 50) * 100}%` }}></div></div>
+                        </div>
+                      </div>
+
+                      <div className="lab-actions">
+                        <p className="lab-help-text">This bot learns specifically from your playstyle. Resetting will wipe its memory of you.</p>
+                        <button 
+                          className="reset-intelligence-btn"
+                          onClick={() => {
+                            if(window.confirm(`Wipe ${selectedBot.name}'s memory? This cannot be undone.`)) {
+                              onResetBot(selectedBot.name);
+                            }
+                          }}
+                        >
+                          Factory Reset Memory
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
           
           <div className="selection-scroll-area">
             {Object.keys(BOTS).map(cat => {
@@ -123,7 +223,7 @@ export default function BotSelection({ onSelectBot, onBack }) {
                           )}
                           <button 
                             className={`bot-mini-card ${selectedBot.id === bot.id ? 'active' : ''}`}
-                            onClick={() => setSelectedBot(bot)}
+                            onClick={() => handleBotClick(bot)}
                           >
                             <div className="bot-mini-avatar">
                               <img src={bot.avatar} alt={bot.name} />

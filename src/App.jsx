@@ -34,7 +34,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 
-const API_BASE_URL = 'https://bhariyo-backend.vercel.app'; // Your Vercel backend URL
+const API_BASE_URL = 'bhariyo-backend.vercel.app'; // Change to your Vercel URL when deploying
 
 function App() {
   const { user, loading: authLoading, logout, updateUser } = useAuth();
@@ -64,6 +64,7 @@ function App() {
   const [fullGameHistory, setFullGameHistory] = useState([]);
   const [pendingBotMove, setPendingBotMove] = useState(null);
   const [learnedWeights, setLearnedWeights] = useState(null);
+  const [adaptiveBotStats, setAdaptiveBotStats] = useState(null);
 
   useEffect(() => {
     const fetchWeights = async () => {
@@ -681,7 +682,44 @@ function App() {
     setCurrentView('play_bots');
   };
 
-  const handleSelectBot = (selectedBot) => {
+  const handleResetBot = async (botName) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/bot/adaptive/reset`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}` 
+        },
+        body: JSON.stringify({ botName })
+      });
+      const data = await res.json();
+      setAdaptiveBotStats(data.stats);
+      setLearnedWeights(data.stats.weights);
+      setBot(prev => ({ ...prev, rating: data.stats.rating }));
+      alert(`${botName}'s intelligence has been reset.`);
+    } catch (err) {
+      console.error('Failed to reset bot', err);
+    }
+  };
+
+  const handlePreviewBot = async (selectedBot) => {
+    if (selectedBot.type === 'ADAPTIVE') {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/bot/adaptive/${selectedBot.name}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        const data = await res.json();
+        setAdaptiveBotStats(data);
+        setLearnedWeights(data.weights);
+      } catch (err) {
+        console.error('Failed to load preview stats', err);
+      }
+    } else {
+      setAdaptiveBotStats(null);
+    }
+  };
+
+  const handleSelectBot = async (selectedBot) => {
     setBot(selectedBot);
     setIsBotGame(true);
     setIsMultiplayer(false);
@@ -690,6 +728,23 @@ function App() {
     setP1Time(600);
     setP2Time(600);
     setCurrentView('game');
+
+    // If it's an adaptive bot, fetch personalized stats
+    if (selectedBot.type === 'ADAPTIVE') {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/bot/adaptive/${selectedBot.name}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        const data = await res.json();
+        setLearnedWeights(data.weights);
+        setAdaptiveBotStats(data);
+        setBot(prev => ({ ...prev, rating: data.rating }));
+      } catch (err) {
+        console.error('Failed to load adaptive bot stats', err);
+      }
+    } else {
+      setAdaptiveBotStats(null);
+    }
   };
 
   const handleStartLocalGame = (seconds) => {
@@ -761,7 +816,15 @@ function App() {
       return <PlayOnline supabase={supabase} channel={channel} onlineUsers={onlineUsers} />;
     }
     if (currentView === 'play_bots') {
-      return <BotSelection onSelectBot={handleSelectBot} onBack={() => setCurrentView('dashboard')} />;
+      return (
+        <BotSelection 
+          onSelectBot={handleSelectBot} 
+          onBack={() => setCurrentView('dashboard')}
+          adaptiveStats={adaptiveBotStats}
+          onResetBot={handleResetBot}
+          onPreviewBot={handlePreviewBot}
+        />
+      );
     }
 
     return (
