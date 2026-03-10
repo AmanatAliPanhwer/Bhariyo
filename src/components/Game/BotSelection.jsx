@@ -15,10 +15,10 @@ import './BotSelection.css';
 
 const BOTS = {
   Adaptive: [
-    { id: 'amanat', name: 'Amanat', rating: 200, avatar: '/usman.png', quote: "I will study your every move, player.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
-    { id: 'mazher', name: 'Mazher', rating: 200, avatar: '/Murtaza.png', quote: "The more we play, the better I understand you.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
-    { id: 'hasnain', name: 'Hasnain', rating: 200, avatar: '/Deepak.png', quote: "Your strategies won't work twice against me.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
-    { id: 'umair', name: 'Umair', rating: 200, avatar: '/Naresh.png', quote: "I am your shadow on the board.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'amanat', name: 'Amanat', rating: 200, avatar: '/Amanat.png', quote: "I will study your every move, player.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'mazher', name: 'Mazher', rating: 200, avatar: '/Mazher.png', quote: "The more we play, the better I understand you.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'hasnain', name: 'Hasnain', rating: 200, avatar: '/Hasnain.png', quote: "Your strategies won't work twice against me.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
+    { id: 'umair', name: 'Umair', rating: 200, avatar: '/umair.png', quote: "I am your shadow on the board.", level: 'INTERMEDIATE', type: 'ADAPTIVE' },
   ],
   Beginner: [
     { id: 'gulloo', name: 'Gulloo', rating: 250, avatar: '/gulloo.png', quote: "Ada, I'm just learning. Be gentle!", level: 'NOOB' },

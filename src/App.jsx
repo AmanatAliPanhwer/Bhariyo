@@ -34,7 +34,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 
-const API_BASE_URL = 'bhariyo-backend.vercel.app'; // Change to your Vercel URL when deploying
+const API_BASE_URL = 'https://bhariyo-backend.vercel.app'; // Change to your Vercel URL when deploying
 
 function App() {
   const { user, loading: authLoading, logout, updateUser } = useAuth();
