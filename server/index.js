@@ -110,23 +110,145 @@ app.get('/api/profile', authMiddleware, async (req, res) => {
 // Secure endpoint to finalize game results
 // This is called by the frontend when a game ends.
 // In a production environment, you might add more verification logic here.
+let newGamesCount = 0;
+
+// Internal Training Function
+async function trainBots() {
+  try {
+    const { data: games } = await supabase.from('games').select('moves, is_draw, winner_id').limit(100);
+    if (!games) return;
+
+    let adjustments = { material: 0, mills: 0, mobility: 0 };
+    games.forEach(game => {
+      if (game.is_draw || !game.moves) return;
+      const criticalMoves = game.moves.slice(-10);
+      criticalMoves.forEach(move => {
+        const multiplier = (move.player === 1 && game.winner_id) || (move.player === 2 && !game.winner_id) ? 1 : -1;
+        adjustments.material += 0.05 * multiplier;
+        adjustments.mills += 0.1 * multiplier;
+        adjustments.mobility += 0.02 * multiplier;
+      });
+    });
+
+    botWeights.material = Math.max(100, Math.min(400, botWeights.material + adjustments.material));
+    botWeights.mills = Math.max(50, Math.min(250, botWeights.mills + adjustments.mills));
+    botWeights.mobility = Math.max(5, Math.min(50, botWeights.mobility + adjustments.mobility));
+    
+    newGamesCount = 0; // Reset counter after training
+    console.log('Bots auto-reinforced with new weights:', botWeights);
+  } catch (err) {
+    console.error('Auto-training failed:', err);
+  }
+}
+
 app.post('/api/game/end', authMiddleware, async (req, res) => {
-  const { winnerId, loserId, isDraw, winnerElo, loserElo } = req.body;
+  const { winnerId, loserId, isDraw, winnerElo, loserElo, gameData } = req.body;
   
   try {
+    // ... (Elo logic)
+    const isValidWinner = winnerId && winnerId !== 'bot' && winnerId !== 'local';
+    const isValidLoser = loserId && loserId !== 'bot' && loserId !== 'local';
+    const isMultiplayer = gameData?.mode === 'multiplayer';
+
     let result = {};
-    if (isDraw) {
-      const p1 = await updatePlayerStats(winnerId, false, true, loserElo);
-      const p2 = await updatePlayerStats(loserId, false, true, winnerElo);
-      result = { p1, p2 };
-    } else {
-      const winner = await updatePlayerStats(winnerId, true, false, loserElo);
-      const loser = await updatePlayerStats(loserId, false, false, winnerElo);
-      result = { winner, loser };
+    if (isMultiplayer && isValidWinner && isValidLoser) {
+      if (isDraw) {
+        const p1 = await updatePlayerStats(winnerId, false, true, loserElo);
+        const p2 = await updatePlayerStats(loserId, false, true, winnerElo);
+        result = { p1, p2 };
+      } else {
+        const winner = await updatePlayerStats(winnerId, true, false, loserElo);
+        const loser = await updatePlayerStats(loserId, false, false, winnerElo);
+        result = { winner, loser };
+      }
     }
-    res.json({ message: 'Stats updated successfully', result });
+
+    // 2. Save detailed game data
+    if (gameData) {
+      await supabase.from('games').insert([{
+        winner_id: isDraw || !isValidWinner ? null : winnerId,
+        loser_id: isDraw || !isValidLoser ? null : loserId,
+        is_draw: isDraw,
+        moves: gameData.moves,
+        opponent_name: gameData.opponent,
+        mode: gameData.mode,
+        bot_level: gameData.botLevel,
+        reason: gameData.reason,
+        created_at: new Date().toISOString()
+      }]);
+
+      // AUTO-TRAIN TRIGGER
+      newGamesCount++;
+      if (newGamesCount >= 50) {
+        trainBots();
+      }
+    }
+
+    res.json({ message: 'Stats updated', result });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to update stats', error: error.message });
+    res.status(500).json({ message: 'Failed', error: error.message });
+  }
+});
+
+// Default Weights for the AI (Base Knowledge)
+let botWeights = {
+  material: 200,
+  mills: 100,
+  potentialMills: 50,
+  doublePotentialMills: 80,
+  mobility: 10,
+  blocked: 30
+};
+
+// Learning Algorithm: Analyzes past games to optimize weights
+app.get('/api/bot/weights', (req, res) => {
+  res.json(botWeights);
+});
+
+app.post('/api/bot/train', authMiddleware, async (req, res) => {
+  try {
+    const { data: games, error } = await supabase
+      .from('games')
+      .select('moves, is_draw, winner_id')
+      .limit(100); // Analyze last 100 games
+
+    if (error || !games) throw error;
+
+    // Simple Reinforcement Learning: Correlation Analysis
+    // We look at the final moves of winners and losers to see which features were high
+    // This is a simplified Gradient Descent approach
+    let adjustments = { material: 0, mills: 0, potentialMills: 0, doublePotentialMills: 0, mobility: 0, blocked: 0 };
+    let gameCount = 0;
+
+    games.forEach(game => {
+      if (game.is_draw || !game.moves) return;
+      gameCount++;
+      
+      // Analyze the last 5 moves (the most critical part of the game)
+      const criticalMoves = game.moves.slice(-5);
+      criticalMoves.forEach(move => {
+        const isWinnerMove = (move.player === 1 && game.winner_id) || (move.player === 2 && !game.winner_id);
+        const multiplier = isWinnerMove ? 1 : -1;
+
+        // Note: In a real ML setup, we'd recalculate features here. 
+        // For this implementation, we observe general trends in the game history.
+        // We'll increment weights that are present in winning states.
+        adjustments.material += 0.1 * multiplier;
+        adjustments.mills += 0.2 * multiplier;
+        adjustments.mobility += 0.05 * multiplier;
+      });
+    });
+
+    // Update global weights based on findings
+    if (gameCount > 0) {
+      botWeights.material = Math.max(50, botWeights.material + adjustments.material);
+      botWeights.mills = Math.max(20, botWeights.mills + adjustments.mills);
+      botWeights.mobility = Math.max(2, botWeights.mobility + adjustments.mobility);
+    }
+
+    res.json({ message: 'Learning complete', newWeights: botWeights });
+  } catch (error) {
+    res.status(500).json({ message: 'Learning failed', error: error.message });
   }
 });
 

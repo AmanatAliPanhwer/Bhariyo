@@ -61,7 +61,22 @@ function App() {
   const [activeMills, setActiveMills] = useState([]);
   const [winner, setWinner] = useState(null);
   const [moveHistory, setMoveHistory] = useState([]);
+  const [fullGameHistory, setFullGameHistory] = useState([]);
   const [pendingBotMove, setPendingBotMove] = useState(null);
+  const [learnedWeights, setLearnedWeights] = useState(null);
+
+  useEffect(() => {
+    const fetchWeights = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/bot/weights`);
+        const data = await res.json();
+        setLearnedWeights(data);
+      } catch (err) {
+        console.log('Using default bot strategy');
+      }
+    };
+    fetchWeights();
+  }, []);
 
   // Timer states
   const [p1Time, setP1Time] = useState(600);
@@ -113,49 +128,82 @@ function App() {
     await finalizeGame(opponent.username, 'Time Out');
   };
 
-  const finalizeGame = async (winUser, reason, isDraw = false) => {
+  const addMoveToHistory = useCallback((player, from, to, type, boardState, phase) => {
+    const label = (idx) => idx === null ? '' : idx + 1;
+    const playerTag = player === 1 ? 'W' : 'B';
+
+    let moveStr = '';
+    if (type === 'PLACE') moveStr = `${playerTag}: @Node ${label(to)}`;
+    else if (type === 'REMOVE') moveStr = `${playerTag}: Captured @${label(to)}`;
+    else moveStr = `${playerTag}: ${label(from)} -> ${label(to)}`;
+
+    setMoveHistory(prev => [...prev, moveStr]);
+    setFullGameHistory(prev => [...prev, {
+        player,
+        from,
+        to,
+        type,
+        board: boardState ? [...boardState] : null,
+        phase,
+        timestamp: Date.now()
+    }]);
+  }, []);
+
+  const finalizeGame = useCallback(async (winUser, reason, isDraw = false) => {
     if (winnerRef.current) return;
     setWinner(winUser || (isDraw ? 'Draw' : 'Unknown'));
     updateLobbyStatus('AVAILABLE');
     
-    if (isMultiplayer && roomRef.current) {
-      const me = userRef.current;
-      const opponent = roomRef.current.players.find(p => p.username !== me.username);
-      const isMeWinner = winUser === me.username;
+    const me = userRef.current;
+    const isBot = isBotGame;
+    const opponentData = isMultiplayer 
+      ? roomRef.current.players.find(p => p.username !== me.username)
+      : (isBot ? { id: 'bot', username: bot.name, elo: bot.rating } : { id: 'local', username: 'Player 2', elo: 1200 });
 
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/game/end`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify({
-            winnerId: isMeWinner ? me.id : (isDraw ? me.id : opponent.id),
-            loserId: isMeWinner ? opponent.id : (isDraw ? opponent.id : me.id),
-            isDraw,
-            winnerElo: isMeWinner ? me.elo : (isDraw ? me.elo : (opponent.elo || 1200)),
-            loserElo: isMeWinner ? (opponent.elo || 1200) : (isDraw ? (opponent.elo || 1200) : me.elo)
-          })
-        });
-        
-        const data = await response.json();
-        if (data.result) {
-          const updatedMe = isMeWinner ? data.result.winner : (isDraw ? data.result.p1 : data.result.loser);
-          updateUser(updatedMe);
+    const isMeWinner = winUser === me.username;
+
+    try {
+      const payload = {
+        winnerId: isMeWinner ? me.id : (isDraw ? me.id : opponentData.id),
+        loserId: isMeWinner ? opponentData.id : (isDraw ? opponentData.id : me.id),
+        isDraw,
+        winnerElo: isMeWinner ? me.elo : (isDraw ? me.elo : (opponentData.elo || 1200)),
+        loserElo: isMeWinner ? (opponentData.elo || 1200) : (isDraw ? (opponentData.elo || 1200) : me.elo),
+        gameData: {
+          moves: fullGameHistory,
+          opponent: opponentData.username,
+          mode: isMultiplayer ? 'multiplayer' : (isBot ? 'bot' : 'local'),
+          botLevel: isBot ? bot.level : null,
+          reason
         }
-      } catch (err) {
-        console.error('Failed to update stats:', err);
+      };
+
+      const response = await fetch(`${API_BASE_URL}/api/game/end`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      const data = await response.json();
+      if (data.result && isMultiplayer) {
+        const updatedMe = isMeWinner ? data.result.winner : (isDraw ? data.result.p1 : data.result.loser);
+        updateUser(updatedMe);
       }
+    } catch (err) {
+      console.error('Failed to update stats:', err);
     }
-  };
+  }, [isBotGame, bot, isMultiplayer, fullGameHistory, updateUser]);
+
 
   // Bot logic effect
   useEffect(() => {
     if (isBotGame && !winner && currentPlayer === 2 && !pendingBotMove) {
       const botMoveTimer = setTimeout(() => {
         const level = bot?.level || 'BEGINNER';
-        const move = getBotMove(board, 2, gamePhase, turnState, unplacedPieces, level);
+        const move = getBotMove(board, 2, gamePhase, turnState, unplacedPieces, level, learnedWeights);
         
         if (move !== null) {
           if (typeof move === 'number') {
@@ -169,7 +217,7 @@ function App() {
       }, 1000);
       return () => clearTimeout(botMoveTimer);
     }
-  }, [isBotGame, winner, currentPlayer, turnState, board, gamePhase, unplacedPieces, bot, pendingBotMove]);
+  }, [isBotGame, winner, currentPlayer, turnState, board, gamePhase, unplacedPieces, bot, pendingBotMove, learnedWeights]);
 
   // Bot move completion effect
   useEffect(() => {
@@ -364,6 +412,7 @@ function App() {
     setActiveNode(null);
     setActiveMills([]);
     setMoveHistory([]);
+    setFullGameHistory([]);
   };
 
   const handleResign = async () => {
@@ -422,21 +471,9 @@ function App() {
     if (nextTurnState === 'IDLE') setActiveNode(null);
 
     if (isFromOpponent) {
-      addMoveToHistory(playerMoved, fromNode, nodeId, type);
+      addMoveToHistory(playerMoved, fromNode, nodeId, type, boardState, nextPhase || gamePhase);
     }
-  }, []);
-
-  const addMoveToHistory = (player, from, to, type) => {
-    const label = (idx) => idx === null ? '' : idx + 1;
-    const playerTag = player === 1 ? 'W' : 'B';
-
-    let moveStr = '';
-    if (type === 'PLACE') moveStr = `${playerTag}: @Node ${label(to)}`;
-    else if (type === 'REMOVE') moveStr = `${playerTag}: Captured @${label(to)}`;
-    else moveStr = `${playerTag}: ${label(from)} -> ${label(to)}`;
-
-    setMoveHistory(prev => [...prev, moveStr]);
-  };
+  }, [gamePhase, finalizeGame, addMoveToHistory]);
 
   const handleNodeClick = (nodeId) => {
     if (winner) return;
@@ -499,7 +536,7 @@ function App() {
       setCurrentPlayer(nextPlayer);
       setActiveMills([]);
       if (isWin) finalizeGame(isWin, 'Defeat');
-      addMoveToHistory(currentPlayer, null, nodeId, 'REMOVE');
+      addMoveToHistory(currentPlayer, null, nodeId, 'REMOVE', nextBoard, nextPhaseValue);
       if (isMultiplayer) emitMove(moveData);
       return;
     }
@@ -540,7 +577,7 @@ function App() {
       setTurnState(nextTurn);
       setActiveMills(nextMills);
       setCurrentPlayer(nextPlayer);
-      addMoveToHistory(currentPlayer, null, nodeId, 'PLACE');
+      addMoveToHistory(currentPlayer, null, nodeId, 'PLACE', nextBoard, nextPhaseValue);
       if (isMultiplayer) emitMove(moveData);
       return;
     }
@@ -603,7 +640,7 @@ function App() {
             setCurrentPlayer(nextPlayer);
             setActiveNode(null);
             if (isWin) finalizeGame(isWin, 'Defeat');
-            addMoveToHistory(currentPlayer, activeNode, nodeId, 'MOVE');
+            addMoveToHistory(currentPlayer, activeNode, nodeId, 'MOVE', nextBoard, nextPhaseValue);
             if (isMultiplayer) emitMove(moveData);
           }
         }
