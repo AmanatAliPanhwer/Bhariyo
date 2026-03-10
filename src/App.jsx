@@ -158,7 +158,7 @@ function App() {
     const isBot = isBotGame;
     const opponentData = isMultiplayer 
       ? roomRef.current.players.find(p => p.username !== me.username)
-      : (isBot ? { id: 'bot', username: bot.name, elo: bot.rating } : { id: 'local', username: 'Player 2', elo: 1200 });
+      : (isBot ? { id: 'bot', username: bot.name, elo: bot.rating } : { id: 'local', username: 'Player 2', elo: 200 });
 
     const isMeWinner = winUser === me.username;
 
@@ -167,8 +167,8 @@ function App() {
         winnerId: isMeWinner ? me.id : (isDraw ? me.id : opponentData.id),
         loserId: isMeWinner ? opponentData.id : (isDraw ? opponentData.id : me.id),
         isDraw,
-        winnerElo: isMeWinner ? me.elo : (isDraw ? me.elo : (opponentData.elo || 1200)),
-        loserElo: isMeWinner ? (opponentData.elo || 1200) : (isDraw ? (opponentData.elo || 1200) : me.elo),
+        winnerElo: isMeWinner ? me.elo : (isDraw ? me.elo : (opponentData.elo || 200)),
+        loserElo: isMeWinner ? (opponentData.elo || 200) : (isDraw ? (opponentData.elo || 200) : me.elo),
         gameData: {
           moves: fullGameHistory,
           opponent: opponentData.username,
@@ -187,6 +187,10 @@ function App() {
         body: JSON.stringify(payload)
       });
       
+      if (!response.ok) {
+        throw new Error(`Server responded with ${response.status}`);
+      }
+
       const data = await response.json();
       if (data.result && isMultiplayer) {
         const updatedMe = isMeWinner ? data.result.winner : (isDraw ? data.result.p1 : data.result.loser);
@@ -298,7 +302,7 @@ function App() {
             await lobbyChannel.track({
               username: user.username,
               id: user.id,
-              elo: user.elo || 1200,
+              elo: user.elo || 200,
               status: 'AVAILABLE',
               online_at: new Date().toISOString(),
             });
@@ -318,7 +322,7 @@ function App() {
       await channel.track({
         username: user.username,
         id: user.id,
-        elo: user.elo || 1200,
+        elo: user.elo || 200,
         status: status,
         online_at: new Date().toISOString(),
       });
@@ -809,7 +813,7 @@ function App() {
                 </div>
                 <div className="player-name-badges">
                   <span className="player-name">{opponentInfo.username}</span>
-                  <span className="rating-badge">{opponentInfo.elo || 1200}</span>
+                  <span className="rating-badge">{opponentInfo.elo || 200}</span>
                 </div>
               </div>
               {isMultiplayer && <MatchTimer seconds={playerSide === 1 ? p2Time : p1Time} isActive={currentPlayer !== playerSide} />}
@@ -855,7 +859,7 @@ function App() {
                 </div>
                 <div className="player-name-badges">
                   <span className="player-name">{user.username}</span>
-                  <span className="rating-badge">{user.elo || 1200}</span>
+                  <span className="rating-badge">{user.elo || 200}</span>
                   <span className="player-flag">🇵🇰</span>
                 </div>
               </div>

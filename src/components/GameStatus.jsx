@@ -4,7 +4,7 @@ import './GameStatus.css';
 const PlayerCard = ({ playerNum, isActive, unplaced, totalAlive, isPlacing }) => {
   const isP1 = playerNum === 1;
   const name = isP1 ? "White" : "Black";
-  const rating = isP1 ? "1200" : "1500";
+  const rating = isP1 ? "200" : "300";
   
   return (
     <div className={`player-card ${isActive ? 'active' : ''} p${playerNum}`}>

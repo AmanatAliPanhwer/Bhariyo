@@ -14,7 +14,7 @@ export default function PlayOnline({ supabase, channel, onlineUsers }) {
       payload: {
         to: targetUser.username,
         from: user.username,
-        elo: user.elo || 1200,
+        elo: user.elo || 200,
         challengeId
       }
     });
@@ -50,7 +50,7 @@ export default function PlayOnline({ supabase, channel, onlineUsers }) {
                   </div>
                   <div className="player-details">
                     <span className="player-name">{player.username}</span>
-                    <span className="player-elo">Rating: {player.elo || 1200}</span>
+                    <span className="player-elo">Rating: {player.elo || 200}</span>
                     <span className="player-status">{player.status === 'AVAILABLE' ? 'Available' : 'In Game'}</span>
                   </div>
                 </div>

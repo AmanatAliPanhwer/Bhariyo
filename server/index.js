@@ -17,7 +17,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_fallback_secret_key';
 // Elo Calculation Helper
 function calculateElo(ratingA, ratingB, scoreA, kFactor = 32) {
   const expectedA = 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
-  return Math.round(ratingA + kFactor * (scoreA - expectedA));
+  let newRating = Math.round(ratingA + kFactor * (scoreA - expectedA));
+  return Math.min(3200, Math.max(0, newRating));
 }
 
 async function updatePlayerStats(userId, isWin, isDraw, opponentElo) {
@@ -56,14 +57,14 @@ app.post('/api/register', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('users')
-      .insert([{ username, password: hashedPassword, elo: 1200 }])
+      .insert([{ username, password: hashedPassword, elo: 200 }])
       .select()
       .single();
 
     if (error) throw error;
 
     const token = jwt.sign({ id: data.id, username }, JWT_SECRET);
-    res.json({ token, user: { id: data.id, username, elo: 1200, wins: 0, games_played: 0 } });
+    res.json({ token, user: { id: data.id, username, elo: 200, wins: 0, games_played: 0 } });
   } catch (err) {
     res.status(400).json({ message: 'Username already exists or registration failed' });
   }
