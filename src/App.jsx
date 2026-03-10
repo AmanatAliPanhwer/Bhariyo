@@ -373,7 +373,11 @@ function App() {
             finalizeGame(null, 'Mutual Agreement', true);
          }
       })
-      .on('broadcast', { event: 'voice_offer' }, (payload) => {
+      .on('broadcast', { event: 'voice_offer' }, async (payload) => {
+        if (!isVoiceActive) {
+          // Re-use current channel
+          await initVoice(gameChannel, false, true); 
+        }
         handleOffer(payload.payload.sdp);
       })
       .on('broadcast', { event: 'voice_answer' }, (payload) => {

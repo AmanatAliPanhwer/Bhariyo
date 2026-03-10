@@ -59,7 +59,7 @@ export const VoiceProvider = ({ children }) => {
     return pc;
   }, []);
 
-  const initVoice = useCallback(async (channel, isInitiator) => {
+  const initVoice = useCallback(async (channel, isInitiator, autoMute = false) => {
     try {
       cleanup();
       channelRef.current = channel;
@@ -67,6 +67,17 @@ export const VoiceProvider = ({ children }) => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
       setLocalStream(stream);
+
+      // Handle initial mute state
+      if (autoMute) {
+        const audioTrack = stream.getAudioTracks()[0];
+        if (audioTrack) {
+          audioTrack.enabled = false;
+          setIsMuted(true);
+        }
+      } else {
+        setIsMuted(false);
+      }
 
       const pc = createPeerConnection(channel, isInitiator);
 
