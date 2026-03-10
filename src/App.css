@@ -428,6 +428,39 @@
   gap: 1rem;
 }
 
+.voice-controls-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.voice-start-btn {
+  color: #4b86e0;
+}
+
+.voice-start-btn:hover {
+  background: rgba(75, 134, 224, 0.1);
+}
+
+.icon-btn.active {
+  color: #81b64c;
+  background: rgba(129, 182, 76, 0.1);
+}
+
+.icon-btn.muted {
+  color: #fa412d;
+  background: rgba(250, 65, 45, 0.1);
+}
+
+.voice-stop-btn {
+  color: #fa412d;
+}
+
+.voice-stop-btn:hover {
+  background: rgba(250, 65, 45, 0.1);
+}
+
 .icon-btn {
   background: none;
   border: none;

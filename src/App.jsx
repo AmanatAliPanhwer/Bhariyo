@@ -12,6 +12,7 @@ import MatchTimer from './components/Game/MatchTimer';
 import GameSetup from './components/Game/GameSetup';
 import BotSelection from './components/Game/BotSelection';
 import { useAuth } from './contexts/AuthContext';
+import { useVoice } from './contexts/VoiceContext';
 import { findNewMills, checkWinList, ADJACENCY, isPhase3, canRemoveAnyPiece, MILLS, getBotMove } from './gameLogic';
 import { supabase } from './supabaseClient';
 import { 
@@ -31,13 +32,26 @@ import {
   Menu,
   Mail,
   Bell,
-  ChevronRight
+  ChevronRight,
+  Mic,
+  MicOff,
+  PhoneOff
 } from 'lucide-react';
 
 const API_BASE_URL = 'https://bhariyo-backend.vercel.app'; // Change to your Vercel URL when deploying
 
 function App() {
   const { user, loading: authLoading, logout, updateUser } = useAuth();
+  const { 
+    isVoiceActive, 
+    isMuted, 
+    toggleMute, 
+    initVoice, 
+    handleOffer, 
+    handleAnswer, 
+    handleCandidate,
+    cleanup: cleanupVoice
+  } = useVoice();
   const [currentView, setCurrentView] = useState('dashboard');
   const [channel, setChannel] = useState(null);
   const [room, setRoom] = useState(null);
@@ -359,6 +373,18 @@ function App() {
             finalizeGame(null, 'Mutual Agreement', true);
          }
       })
+      .on('broadcast', { event: 'voice_offer' }, (payload) => {
+        handleOffer(payload.payload.sdp);
+      })
+      .on('broadcast', { event: 'voice_answer' }, (payload) => {
+        handleAnswer(payload.payload.sdp);
+      })
+      .on('broadcast', { event: 'voice_candidate' }, (payload) => {
+        handleCandidate(payload.payload.candidate);
+      })
+      .on('broadcast', { event: 'voice_end' }, () => {
+        cleanupVoice();
+      })
       .subscribe();
 
     setRoom({ ...roomData, channel: gameChannel });
@@ -428,6 +454,8 @@ function App() {
           event: 'resign',
           payload: { from: user.username }
         });
+        room.channel.send({ type: 'broadcast', event: 'voice_end', payload: {} });
+        cleanupVoice();
         const opponent = room.players.find(p => p.username !== user.username);
         await finalizeGame(opponent.username, 'Resignation');
       } else {
@@ -656,8 +684,10 @@ function App() {
 
   const handleQuitGame = () => {
     if (isMultiplayer && room?.channel) {
+       room.channel.send({ type: 'broadcast', event: 'voice_end', payload: {} });
        room.channel.unsubscribe();
     }
+    cleanupVoice();
     updateLobbyStatus('AVAILABLE');
     setRoom(null);
     setIsMultiplayer(false);
@@ -890,8 +920,40 @@ function App() {
                    <button className="icon-btn mobile-hide" title="Focus Mode" onClick={() => setIsFocusMode(true)}>
                       <Maximize2 size={20} />
                    </button>
+                   {isMultiplayer && (
+                      <div className="voice-controls-vertical">
+                        {!isVoiceActive ? (
+                          <button 
+                            className="icon-btn voice-start-btn" 
+                            title="Start Voice Chat" 
+                            onClick={() => initVoice(room.channel, true)}
+                          >
+                            <Mic size={20} />
+                          </button>
+                        ) : (
+                          <>
+                            <button 
+                              className={`icon-btn ${isMuted ? 'muted' : 'active'}`} 
+                              title={isMuted ? 'Unmute' : 'Mute'} 
+                              onClick={toggleMute}
+                            >
+                              {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                            </button>
+                            <button 
+                              className="icon-btn voice-stop-btn" 
+                              title="End Voice Chat" 
+                              onClick={() => {
+                                room.channel.send({ type: 'broadcast', event: 'voice_end', payload: {} });
+                                cleanupVoice();
+                              }}
+                            >
+                              <PhoneOff size={20} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                   )}
               </div>
-
             )}
 
             <Board 
