@@ -68,14 +68,22 @@ export const checkWinList = (board, currentPlayer) => {
   
   // Check if opponent has valid moves
   let hasValidMove = false;
+  const hasEmptySpot = board.some(p => p === null);
+
   for(let i=0; i<24; i++) {
     if(board[i] === opponent) {
-      if(opponentPieces === 3) return false; // Flying phase always has valid moves if board has empty spots
-      const adjacent = ADJACENCY[i];
-      for(let j=0; j<adjacent.length; j++) {
-        if(board[adjacent[j]] === null) {
-          hasValidMove = true;
-          break;
+      if(opponentPieces === 3) {
+        if (hasEmptySpot) {
+            hasValidMove = true;
+            break;
+        }
+      } else {
+        const adjacent = ADJACENCY[i];
+        for(let j=0; j<adjacent.length; j++) {
+          if(board[adjacent[j]] === null) {
+            hasValidMove = true;
+            break;
+          }
         }
       }
     }
@@ -99,6 +107,43 @@ export const canRemoveAnyPiece = (board, opponent) => {
   // If all pieces are part of a mill, return true (can remove any). Otherwise false (can only remove non-mill pieces).
   return opponentPiecesInfo.length === piecesInMills.size;
 }
+
+// Zobrist Hashing for Transposition Table
+let ZOBRIST_INITED = false;
+const ZOBRIST_NODES = Array.from({ length: 24 }, () => [0, 0, 0]);
+const ZOBRIST_TURN = Math.floor(Math.random() * 0xFFFFFFFF);
+
+const initZobrist = () => {
+  if (ZOBRIST_INITED) return;
+  for (let i = 0; i < 24; i++) {
+    for (let j = 0; j < 3; j++) {
+      ZOBRIST_NODES[i][j] = Math.floor(Math.random() * 0xFFFFFFFF);
+    }
+  }
+  ZOBRIST_INITED = true;
+};
+
+const getBoardHash = (board, currentPlayer, unplaced, phase, currentRemoving) => {
+  initZobrist();
+  let hash = 0;
+  for (let i = 0; i < 24; i++) {
+    const val = board[i] === null ? 0 : board[i]; // 0: null, 1: p1, 2: p2
+    hash ^= ZOBRIST_NODES[i][val];
+  }
+  if (currentPlayer === 2) hash ^= ZOBRIST_TURN;
+  hash ^= (unplaced[1] * 10001);
+  hash ^= (unplaced[2] * 1000001);
+  if (phase === 'PLACING') hash ^= 0x55555555;
+  if (currentRemoving) hash ^= 0xAAAAAAAA;
+  return hash;
+};
+
+const TRANSPOSITION_TABLE = new Map();
+const TT_SIZE_LIMIT = 200000;
+
+const clearTT = () => {
+  if (TRANSPOSITION_TABLE.size > TT_SIZE_LIMIT) TRANSPOSITION_TABLE.clear();
+};
 
 // Heuristic Evaluation Function for Nine Men's Morris
 const evaluateBoard = (board, player, phase, learnedWeights = null) => {
@@ -188,7 +233,59 @@ const evaluateBoard = (board, player, phase, learnedWeights = null) => {
   return score;
 };
 
-// Minimax with Alpha-Beta Pruning
+// Quiescence search to handle "noisy" positions (like pending captures)
+const quiescence = (board, alpha, beta, isMaximizing, player, phase, unplaced, currentRemoving, learnedWeights) => {
+  const opponent = player === 1 ? 2 : 1;
+  const activePlayer = isMaximizing ? player : opponent;
+  const otherPlayer = isMaximizing ? opponent : player;
+
+  if (!currentRemoving) {
+    const standPat = evaluateBoard(board, player, phase, learnedWeights);
+    if (isMaximizing) {
+      if (standPat >= beta) return beta;
+      if (standPat > alpha) alpha = standPat;
+    } else {
+      if (standPat <= alpha) return alpha;
+      if (standPat < beta) beta = standPat;
+    }
+    // Only search further if we are in a removal state
+    return standPat;
+  }
+
+  // Handle removals during quiescence
+  const targets = [];
+  const canRemoveAny = canRemoveAnyPiece(board, otherPlayer);
+  board.forEach((p, i) => {
+    if (p === otherPlayer) {
+      if (canRemoveAny) targets.push(i);
+      else {
+        const inMill = MILLS.some(mill => mill.includes(i) && isMill(board, otherPlayer, mill));
+        if (!inMill) targets.push(i);
+      }
+    }
+  });
+
+  if (targets.length === 0) return evaluateBoard(board, player, phase, learnedWeights);
+
+  let bestEval = isMaximizing ? -Infinity : Infinity;
+  for (const target of targets) {
+    const nextBoard = [...board];
+    nextBoard[target] = null;
+    const evaluation = quiescence(nextBoard, alpha, beta, !isMaximizing, player, phase, unplaced, false, learnedWeights);
+    
+    if (isMaximizing) {
+      bestEval = Math.max(bestEval, evaluation);
+      alpha = Math.max(alpha, evaluation);
+    } else {
+      bestEval = Math.min(bestEval, evaluation);
+      beta = Math.min(beta, evaluation);
+    }
+    if (beta <= alpha) break;
+  }
+  return bestEval;
+};
+
+// Minimax with Alpha-Beta Pruning, PVS, and Transposition Table
 const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplaced, currentRemoving = false, learnedWeights = null) => {
   const opponent = player === 1 ? 2 : 1;
   const activePlayer = isMaximizing ? player : opponent;
@@ -196,7 +293,16 @@ const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplace
 
   // Terminal conditions
   if (checkWinList(board, otherPlayer)) return isMaximizing ? -10000 - depth : 10000 + depth;
-  if (depth === 0) return evaluateBoard(board, player, phase, learnedWeights);
+  if (depth === 0) return quiescence(board, alpha, beta, isMaximizing, player, phase, unplaced, currentRemoving, learnedWeights);
+
+  // TT Lookup
+  const hash = getBoardHash(board, activePlayer, unplaced, phase, currentRemoving);
+  const cached = TRANSPOSITION_TABLE.get(hash);
+  if (cached && cached.depth >= depth) {
+    if (cached.flag === 'EXACT') return cached.value;
+    if (cached.flag === 'LOWER' && cached.value >= beta) return cached.value;
+    if (cached.flag === 'UPPER' && cached.value <= alpha) return cached.value;
+  }
 
   if (currentRemoving) {
     // Current player needs to remove an opponent's piece
@@ -213,33 +319,31 @@ const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplace
     });
 
     if (targets.length === 0) {
-        // Should not happen if game is still active
         return minimax(board, depth - 1, alpha, beta, !isMaximizing, player, phase, unplaced, false, learnedWeights);
     }
 
-    if (isMaximizing) {
-      let maxEval = -Infinity;
-      for (const target of targets) {
-        const nextBoard = [...board];
-        nextBoard[target] = null;
-        const evaluation = minimax(nextBoard, depth - 1, alpha, beta, false, player, phase, unplaced, false, learnedWeights);
-        maxEval = Math.max(maxEval, evaluation);
+    let bestEval = isMaximizing ? -Infinity : Infinity;
+    for (const target of targets) {
+      const nextBoard = [...board];
+      nextBoard[target] = null;
+      const evaluation = minimax(nextBoard, depth - 1, alpha, beta, !isMaximizing, player, phase, unplaced, false, learnedWeights);
+      
+      if (isMaximizing) {
+        bestEval = Math.max(bestEval, evaluation);
         alpha = Math.max(alpha, evaluation);
-        if (beta <= alpha) break;
-      }
-      return maxEval;
-    } else {
-      let minEval = Infinity;
-      for (const target of targets) {
-        const nextBoard = [...board];
-        nextBoard[target] = null;
-        const evaluation = minimax(nextBoard, depth - 1, alpha, beta, true, player, phase, unplaced, false, learnedWeights);
-        minEval = Math.min(minEval, evaluation);
+      } else {
+        bestEval = Math.min(bestEval, evaluation);
         beta = Math.min(beta, evaluation);
-        if (beta <= alpha) break;
       }
-      return minEval;
+      if (beta <= alpha) break;
     }
+    
+    let flag = 'EXACT';
+    if (bestEval <= alpha) flag = 'UPPER';
+    else if (bestEval >= beta) flag = 'LOWER';
+    TRANSPOSITION_TABLE.set(hash, { depth, value: bestEval, flag });
+    
+    return bestEval;
   }
 
   // Generate regular moves
@@ -262,7 +366,6 @@ const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplace
   }
 
   if (moves.length === 0) {
-      // No moves available, current player loses
       return isMaximizing ? -10000 - depth : 10000 + depth;
   }
 
@@ -275,51 +378,52 @@ const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplace
       return millB - millA;
   });
 
-  if (isMaximizing) {
-    let maxEval = -Infinity;
-    for (const move of moves) {
-      const nextBoard = [...board];
-      const target = typeof move === 'number' ? move : move.to;
-      const from = typeof move === 'number' ? null : move.from;
-      if (from !== null) nextBoard[from] = null;
-      nextBoard[target] = player;
-      
-      const nextUnplaced = { ...unplaced };
-      if (phase === 'PLACING' && from === null) nextUnplaced[player]--;
+  let bestEval = isMaximizing ? -Infinity : Infinity;
+  let firstMove = true;
 
-      const newMills = findNewMills(nextBoard, player, target);
-      let nextPhase = phase;
-      if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
+  for (const move of moves) {
+    const nextBoard = [...board];
+    const target = typeof move === 'number' ? move : move.to;
+    const from = typeof move === 'number' ? null : move.from;
+    if (from !== null) nextBoard[from] = null;
+    nextBoard[target] = activePlayer;
+    
+    const nextUnplaced = { ...unplaced };
+    if (phase === 'PLACING' && from === null) nextUnplaced[activePlayer]--;
 
-      const evaluation = minimax(nextBoard, depth - 1, alpha, beta, newMills.length === 0, player, nextPhase, nextUnplaced, newMills.length > 0, learnedWeights);
-      maxEval = Math.max(maxEval, evaluation);
+    const newMills = findNewMills(nextBoard, activePlayer, target);
+    let nextPhase = phase;
+    if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
+
+    let evaluation;
+    if (firstMove) {
+        evaluation = minimax(nextBoard, depth - 1, alpha, beta, newMills.length === 0 ? !isMaximizing : isMaximizing, player, nextPhase, nextUnplaced, newMills.length > 0, learnedWeights);
+        firstMove = false;
+    } else {
+        // PVS: Search with null window first
+        evaluation = minimax(nextBoard, depth - 1, isMaximizing ? alpha : beta - 1, isMaximizing ? alpha + 1 : beta, newMills.length === 0 ? !isMaximizing : isMaximizing, player, nextPhase, nextUnplaced, newMills.length > 0, learnedWeights);
+        if (isMaximizing ? (evaluation > alpha && evaluation < beta) : (evaluation < beta && evaluation > alpha)) {
+            // Re-search if null window search failed
+            evaluation = minimax(nextBoard, depth - 1, alpha, beta, newMills.length === 0 ? !isMaximizing : isMaximizing, player, nextPhase, nextUnplaced, newMills.length > 0, learnedWeights);
+        }
+    }
+    
+    if (isMaximizing) {
+      bestEval = Math.max(bestEval, evaluation);
       alpha = Math.max(alpha, evaluation);
-      if (beta <= alpha) break;
-    }
-    return maxEval;
-  } else {
-    let minEval = Infinity;
-    for (const move of moves) {
-      const nextBoard = [...board];
-      const target = typeof move === 'number' ? move : move.to;
-      const from = typeof move === 'number' ? null : move.from;
-      if (from !== null) nextBoard[from] = null;
-      nextBoard[target] = opponent;
-      
-      const nextUnplaced = { ...unplaced };
-      if (phase === 'PLACING' && from === null) nextUnplaced[opponent]--;
-
-      const newMills = findNewMills(nextBoard, opponent, target);
-      let nextPhase = phase;
-      if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
-
-      const evaluation = minimax(nextBoard, depth - 1, alpha, beta, newMills.length > 0, player, nextPhase, nextUnplaced, newMills.length > 0, learnedWeights);
-      minEval = Math.min(minEval, evaluation);
+    } else {
+      bestEval = Math.min(bestEval, evaluation);
       beta = Math.min(beta, evaluation);
-      if (beta <= alpha) break;
     }
-    return minEval;
+    if (beta <= alpha) break;
   }
+
+  let flag = 'EXACT';
+  if (bestEval <= alpha) flag = 'UPPER';
+  else if (bestEval >= beta) flag = 'LOWER';
+  TRANSPOSITION_TABLE.set(hash, { depth, value: bestEval, flag });
+
+  return bestEval;
 };
 
 // AI Logic
@@ -331,9 +435,11 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
       'NOOB': { kRandom: 0.8, depth: 1, skillCap: 0.2 },
       'BEGINNER': { kRandom: 0.4, depth: 2, skillCap: 0.5 },
       'INTERMEDIATE': { kRandom: 0.1, depth: 3, skillCap: 0.8 },
-      'ADVANCED': { kRandom: 0.0, depth: 4, skillCap: 1.0 }
+      'ADVANCED': { kRandom: 0.0, depth: 5, skillCap: 1.0 }
   };
-  const { kRandom, depth, skillCap } = config[level] || config.BEGINNER;
+  const { kRandom, depth: maxDepth, skillCap } = config[level] || config.BEGINNER;
+
+  clearTT();
 
   // Apply Skill Cap: Dumbing down the learned weights for lower bots
   let restrictedWeights = null;
@@ -341,12 +447,12 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
       const defaultWeights = { material: 200, mills: 100, potentialMills: 50, doublePotentialMills: 80, mobility: 10, blocked: 30 };
       restrictedWeights = {};
       Object.keys(learnedWeights).forEach(key => {
-          // Mix learned weights with defaults based on skillCap
           restrictedWeights[key] = (learnedWeights[key] * skillCap) + (defaultWeights[key] * (1 - skillCap));
       });
   }
 
-  if (turnState === 'REMOVING_OPPONENT') {
+  const isRemoving = turnState === 'REMOVING_OPPONENT';
+  const getTargets = () => {
     const targets = [];
     const canRemoveAny = canRemoveAnyPiece(board, opponent);
     board.forEach((p, i) => {
@@ -358,24 +464,9 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
         }
       }
     });
+    return targets;
+  };
 
-    if (Math.random() < kRandom) return targets[Math.floor(Math.random() * targets.length)];
-
-    let bestEval = -Infinity;
-    let bestTarget = targets[0];
-    for (const target of targets) {
-        const nextBoard = [...board];
-        nextBoard[target] = null;
-        const evaluation = minimax(nextBoard, depth - 1, -Infinity, Infinity, false, player, phase, unplacedPieces, false, restrictedWeights);
-        if (evaluation > bestEval) {
-            bestEval = evaluation;
-            bestTarget = target;
-        }
-    }
-    return bestTarget;
-  }
-
-  // Get all valid moves
   const getValidMoves = () => {
     if (phase === 'PLACING') {
       return board.map((p, i) => p === null ? i : -1).filter(i => i !== -1);
@@ -399,44 +490,78 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
     }
   };
 
-  const validMoves = getValidMoves();
-  if (validMoves.length === 0) return null;
+  const validOptions = isRemoving ? getTargets() : getValidMoves();
+  if (validOptions.length === 0) return null;
 
   // Move ordering for root
-  validMoves.sort((a, b) => {
+  validOptions.sort((a, b) => {
       const targetA = typeof a === 'number' ? a : a.to;
       const targetB = typeof b === 'number' ? b : b.to;
-      const millA = findNewMills(board, player, targetA).length;
-      const millB = findNewMills(board, player, targetB).length;
+      const millA = isRemoving ? 0 : findNewMills(board, player, targetA).length;
+      const millB = isRemoving ? 0 : findNewMills(board, player, targetB).length;
       return millB - millA;
   });
 
-  if (Math.random() < kRandom) return validMoves[Math.floor(Math.random() * validMoves.length)];
+  if (Math.random() < kRandom) return validOptions[Math.floor(Math.random() * validOptions.length)];
 
-  let bestEval = -Infinity;
-  let bestMove = validMoves[0];
+  let bestMoveGlobal = validOptions[0];
+  const startTime = Date.now();
+  const TIME_LIMIT = 2000; // 2 seconds
   
-  for (const move of validMoves) {
-      const tempBoard = [...board];
-      const target = typeof move === 'number' ? move : move.to;
-      const from = typeof move === 'number' ? null : move.from;
-      if (from !== null) tempBoard[from] = null;
-      tempBoard[target] = player;
-      
-      const nextUnplaced = { ...unplacedPieces };
-      if (phase === 'PLACING' && from === null) nextUnplaced[player]--;
+  // Iterative Deepening
+  for (let d = 1; d <= maxDepth; d++) {
+    let bestEval = -Infinity;
+    let bestMoveAtDepth = validOptions[0];
+    let completedDepth = true;
 
-      const newMills = findNewMills(tempBoard, player, target);
-      let nextPhase = phase;
-      if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
-
-      const evaluation = minimax(tempBoard, depth - 1, -Infinity, Infinity, newMills.length === 0, player, nextPhase, nextUnplaced, newMills.length > 0, restrictedWeights);
-      if (evaluation > bestEval) {
-          bestEval = evaluation;
-          bestMove = move;
+    for (const move of validOptions) {
+      if (Date.now() - startTime > TIME_LIMIT) {
+          completedDepth = false;
+          break;
       }
+      const tempBoard = [...board];
+      let evaluation;
+
+      if (isRemoving) {
+        tempBoard[move] = null;
+        evaluation = minimax(tempBoard, d - 1, -Infinity, Infinity, false, player, phase, unplacedPieces, false, restrictedWeights);
+      } else {
+        const target = typeof move === 'number' ? move : move.to;
+        const from = typeof move === 'number' ? null : move.from;
+        if (from !== null) tempBoard[from] = null;
+        tempBoard[target] = player;
+        
+        const nextUnplaced = { ...unplacedPieces };
+        if (phase === 'PLACING' && from === null) nextUnplaced[player]--;
+
+        const newMills = findNewMills(tempBoard, player, target);
+        let nextPhase = phase;
+        if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
+
+        evaluation = minimax(tempBoard, d - 1, -Infinity, Infinity, newMills.length === 0, player, nextPhase, nextUnplaced, newMills.length > 0, restrictedWeights);
+      }
+
+      if (evaluation > bestEval) {
+        bestEval = evaluation;
+        bestMoveAtDepth = move;
+      }
+    }
+    
+    if (completedDepth) {
+        bestMoveGlobal = bestMoveAtDepth;
+        
+        // Sort validOptions based on bestMoveAtDepth for next iteration's move ordering
+        const bestIdx = validOptions.indexOf(bestMoveAtDepth);
+        if (bestIdx > 0) {
+            validOptions.splice(bestIdx, 1);
+            validOptions.unshift(bestMoveAtDepth);
+        }
+    } else {
+        break; // Stop if time limit reached
+    }
   }
-  return bestMove;
+
+  return bestMoveGlobal;
 };
 
 
