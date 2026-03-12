@@ -426,8 +426,34 @@ const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplace
   return bestEval;
 };
 
+import { BhariyoGCN } from './GCN';
+import { BhariyoONNXModel } from './ONNXModel';
+
+// Global singleton for the neural networks
+let GLOBAL_GCN = null;
+let GLOBAL_ONNX = null;
+
+const getGCN = () => {
+  if (!GLOBAL_GCN) GLOBAL_GCN = new BhariyoGCN();
+  return GLOBAL_GCN;
+};
+
+const getONNXModel = () => {
+    if (!GLOBAL_ONNX) GLOBAL_ONNX = new BhariyoONNXModel();
+    return GLOBAL_ONNX;
+};
+
+// State encoding for Neural Networks: [24, 3] tensor
+const encodeStateForNN = (board) => {
+  return board.map(p => {
+    if (p === null) return [1, 0, 0]; // Empty
+    if (p === 1) return [0, 1, 0];    // Player 1
+    return [0, 0, 1];                 // Player 2
+  });
+};
+
 // AI Logic
-export const getBotMove = (board, player, phase, turnState, unplacedPieces, level = 'BEGINNER', learnedWeights = null) => {
+export const getBotMove = async (board, player, phase, turnState, unplacedPieces, level = 'BEGINNER', learnedWeights = null) => {
   const opponent = player === 1 ? 2 : 1;
   
   // Difficulty Settings
@@ -435,7 +461,8 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
       'NOOB': { kRandom: 0.8, depth: 1, skillCap: 0.2 },
       'BEGINNER': { kRandom: 0.4, depth: 2, skillCap: 0.5 },
       'INTERMEDIATE': { useMCTS: true, numSearches: 100, kRandom: 0.1, fallbackDepth: 2 },
-      'ADVANCED': { useMCTS: true, numSearches: 400, kRandom: 0.0, fallbackDepth: 4 }
+      'ADVANCED': { useMCTS: true, numSearches: 400, kRandom: 0.0, fallbackDepth: 4, useGCN: true },
+      'EXPERT': { useMCTS: true, numSearches: 800, kRandom: 0.0, useONNX: true }
   };
   const currentConfig = config[level] || config.BEGINNER;
 
@@ -468,37 +495,68 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
     const state = { board, player, phase, unplacedPieces, turnState };
     const mctsArgs = {
         num_searches: adjustedSearches,
-        c_puct: 1.41,
-        dirichlet_epsilon: level === 'ADVANCED' ? 0.25 : 0.1,
-        dirichlet_alpha: 0.3
+        c_puct: 2.5, // High exploration for expert
+        dirichlet_epsilon: level === 'EXPERT' ? 0.35 : (level === 'ADVANCED' ? 0.25 : 0.1),
+        dirichlet_alpha: 0.5
     };
     
-    // Simple heuristic-based model for MCTS in absence of a neural network
-    const heuristicModel = (s) => {
+    // Neural Network or Heuristic model
+    const gcnModel = getGCN();
+    const onnxModel = getONNXModel();
+    const useGCN = currentConfig.useGCN;
+    const useONNX = currentConfig.useONNX;
+
+    const modelProxy = async (s) => {
         const moves = getValidMovesInternal(s.board, s.player, s.phase, s.turnState, s.unplacedPieces);
         if (moves.length === 0) return { policy: [], value: 0 };
 
-        // Policy: prioritize mills and mobility
-        const movesWithScores = moves.map(move => {
-            const target = typeof move === 'number' ? move : move.to;
-            const millCount = findNewMills(s.board, s.player, target).length;
-            return { action: move, prob: 1 + millCount * 10 };
-        });
-        const totalProb = movesWithScores.reduce((sum, m) => sum + m.prob, 0);
-        const policy = movesWithScores.map(m => ({ action: m.action, prob: m.prob / totalProb }));
-
-        // Value: normalized evaluation
-        const evalScore = evaluateBoard(s.board, s.player, s.phase, learnedWeights);
-        const value = Math.tanh(evalScore / 2000);
-
-        return { policy, value };
+        if (useONNX || useGCN) {
+            const encoded = encodeStateForNN(s.board);
+            const { policy, value } = useONNX ? await onnxModel.predict(encoded) : await gcnModel.predict(encoded);
+            
+            // Map 624-sized policy back to current legal moves
+            const movesWithScores = moves.map(move => {
+                let actionIdx;
+                if (typeof move === 'number') actionIdx = move; // Place/Remove
+                else actionIdx = 24 + move.from * 24 + move.to; // Move
+                
+                return { action: move, prob: policy[actionIdx] || 0.001 };
+            });
+            return { policy: movesWithScores, value };
+        } else {
+            // Fallback to Heuristic
+            const movesWithScores = moves.map(move => {
+                const target = typeof move === 'number' ? move : move.to;
+                const millCount = findNewMills(s.board, s.player, target).length;
+                return { action: move, prob: 1 + millCount * 10 };
+            });
+            const totalProb = movesWithScores.reduce((sum, m) => sum + m.prob, 0);
+            const policy = movesWithScores.map(m => ({ action: m.action, prob: m.prob / totalProb }));
+            const evalScore = evaluateBoard(s.board, s.player, s.phase, learnedWeights);
+            const value = Math.tanh(evalScore / 2000);
+            return { policy, value };
+        }
     };
 
-    const mcts = new MCTS(game, mctsArgs, heuristicModel);
-    const actionVisits = mcts.search(state);
+    const mcts = new MCTS(game, mctsArgs, modelProxy);
+    const actionVisits = await mcts.search(state);
     
     if (actionVisits.length === 0) return null;
     
+    // Calculate Win Probability based on root value
+    const rootValue = mcts.rootValue;
+    const winProb = (rootValue + 1) / 2;
+
+    // Resignation Logic: If win probability is extremely low for several turns
+    if (winProb < 0.05 && board.filter(p => p !== null).length > 12) {
+        return { type: 'RESIGN' };
+    }
+
+    // Draw Offer Logic: If position is very balanced and it's a long game
+    if (Math.abs(rootValue) < 0.1 && board.filter(p => p !== null).length > 15 && Math.random() < 0.05) {
+        return { type: 'OFFER_DRAW' };
+    }
+
     // Select action with most visits
     actionVisits.sort((a, b) => b.visits - a.visits);
     return actionVisits[0].action;
@@ -631,6 +689,26 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
 };
 
 // MCTS Implementation
+export const shouldBotAcceptDraw = async (board, player, phase, turnState, unplacedPieces, level = 'BEGINNER', learnedWeights = null) => {
+  const score = evaluateBoard(board, player, phase, learnedWeights);
+  
+  // Higher level bots are more "stubborn" and only accept draws if the position is truly deadlocked
+  const config = {
+      'NOOB': { threshold: 600 },
+      'BEGINNER': { threshold: 400 },
+      'INTERMEDIATE': { threshold: 200 },
+      'ADVANCED': { threshold: 100 }
+  };
+  const { threshold } = config[level] || config.BEGINNER;
+
+  // If evaluation is close to 0, bot accepts. 
+  // If bot is significantly winning (score > threshold), it declines.
+  // if bot is significantly losing (score < -threshold), it might actually accept a draw as a "save"!
+  
+  if (score > threshold) return false; // Bot is winning, won't accept
+  return true; // Position is balanced or bot is losing (so it accepts draw to avoid loss)
+};
+
 class MCTSNode {
   constructor(game, args, state, parent = null, actionTaken = null, prior = 0) {
     this.game = game;
@@ -668,10 +746,10 @@ class MCTSNode {
     return qValue + this.args.c_puct * child.prior * Math.sqrt(this.visitCount) / (1 + child.visitCount);
   }
 
-  expand(policy) {
+  async expand(policy) {
     // policy is an array of { action, prob }
     for (const { action, prob } of policy) {
-      const nextState = this.game.getNextState(this.state, action);
+      const nextState = await this.game.getNextState(this.state, action);
       this.children.push(new MCTSNode(this.game, this.args, nextState, this, action, prob));
     }
   }
@@ -684,11 +762,11 @@ class MCTS {
     this.model = model;
   }
 
-  search(state) {
+  async search(state) {
     const root = new MCTSNode(this.game, this.args, state);
 
     // Initial expansion
-    let { policy } = this.model(state);
+    let { policy } = await this.model(state);
     
     // Add Dirichlet noise to root
     if (this.args.dirichlet_epsilon > 0 && policy.length > 0) {
@@ -699,7 +777,7 @@ class MCTS {
       }));
     }
 
-    root.expand(policy);
+    await root.expand(policy);
 
     for (let i = 0; i < this.args.num_searches; i++) {
       let node = root;
@@ -713,13 +791,16 @@ class MCTS {
       value = this.game.getOpponentValue(value);
 
       if (!isTerminal) {
-        const res = this.model(node.state);
-        node.expand(res.policy);
+        const res = await this.model(node.state);
+        await node.expand(res.policy);
         value = res.value;
       }
 
       this.backpropagate(node, value);
     }
+
+    // Store root value for evaluation
+    this.rootValue = root.visitCount > 0 ? (root.valueSum / root.visitCount) : 0;
 
     return root.children.map(child => ({
       action: child.actionTaken,

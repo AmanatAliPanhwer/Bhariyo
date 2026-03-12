@@ -13,7 +13,7 @@ import GameSetup from './components/Game/GameSetup';
 import BotSelection from './components/Game/BotSelection';
 import { useAuth } from './contexts/AuthContext';
 import { useVoice } from './contexts/VoiceContext';
-import { findNewMills, checkWinList, ADJACENCY, isPhase3, canRemoveAnyPiece, MILLS, getBotMove } from './gameLogic';
+import { findNewMills, checkWinList, ADJACENCY, isPhase3, canRemoveAnyPiece, MILLS, getBotMove, shouldBotAcceptDraw } from './gameLogic';
 import { supabase } from './supabaseClient';
 import { 
   Trophy, 
@@ -38,8 +38,8 @@ import {
   PhoneOff
 } from 'lucide-react';
 
-const API_BASE_URL = 'https://bhariyo-backend.vercel.app';
-// const API_BASE_URL = 'http://localhost:5000';
+// const API_BASE_URL = 'https://bhariyo-backend.vercel.app';
+const API_BASE_URL = 'http://localhost:5000';
 
 function App() {
   const { user, loading: authLoading, logout, updateUser } = useAuth();
@@ -80,6 +80,18 @@ function App() {
   const [pendingBotMove, setPendingBotMove] = useState(null);
   const [learnedWeights, setLearnedWeights] = useState(null);
   const [adaptiveBotStats, setAdaptiveBotStats] = useState(null);
+  const botWorkerRef = useRef(null);
+
+  useEffect(() => {
+    // Initialize Web Worker
+    botWorkerRef.current = new Worker(new URL('./botWorker.js', import.meta.url), { type: 'module' });
+    
+    return () => {
+      if (botWorkerRef.current) {
+        botWorkerRef.current.terminate();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const fetchWeights = async () => {
@@ -171,10 +183,12 @@ function App() {
     updateLobbyStatus('AVAILABLE');
     
     const me = userRef.current;
+    if (!me) return; // Guard against null user
+
     const isBot = isBotGame;
     const opponentData = isMultiplayer 
-      ? roomRef.current.players.find(p => p.username !== me.username)
-      : (isBot ? { id: 'bot', username: bot.name, elo: bot.rating } : { id: 'local', username: 'Player 2', elo: 200 });
+      ? roomRef.current?.players.find(p => p.username !== me.username)
+      : (isBot ? { id: 'bot', username: bot?.name, elo: bot?.rating } : { id: 'local', username: 'Player 2', elo: 200 });
 
     const isMeWinner = winUser === me.username;
 
@@ -223,27 +237,59 @@ function App() {
     if (isBotGame && !winner && currentPlayer === 2 && !pendingBotMove) {
       const botMoveTimer = setTimeout(() => {
         const level = bot?.level || 'BEGINNER';
-        const move = getBotMove(board, 2, gamePhase, turnState, unplacedPieces, level, learnedWeights);
         
-        if (move !== null) {
-          if (typeof move === 'number') {
-            handleNodeClick(move);
-          } else {
-            // It's a move from -> to
-            setPendingBotMove(move);
-            handleNodeClick(move.from);
+        // Listen for worker response
+        botWorkerRef.current.onmessage = (e) => {
+          const { move, error } = e.data;
+          if (error) {
+            console.error('Worker error:', error);
+            return;
           }
-        }
+
+          if (move !== null) {
+            if (move.type === 'RESIGN') {
+              console.log(`%c [BOT] ${bot.name} Resigns: "Well played, you have outmaneuvered me."`, 'color: #ff4444; font-weight: bold;');
+              finalizeGame(user?.username, 'Resignation');
+              return;
+            }
+            if (move.type === 'OFFER_DRAW') {
+               if (window.confirm(`${bot.name} offers a draw. Accept?`)) {
+                  finalizeGame(null, 'Mutual Agreement', true);
+               } else {
+                  console.log(`%c [BOT] ${bot.name}: "The battle continues then!"`, 'color: #4444ff;');
+               }
+               return;
+            }
+
+            if (typeof move === 'number') {
+              handleNodeClick(move, true);
+            } else {
+              setPendingBotMove(move);
+              handleNodeClick(move.from, true);
+            }
+          }
+        };
+
+        // Send data to worker
+        botWorkerRef.current.postMessage({
+          board,
+          player: 2,
+          phase: gamePhase,
+          turnState,
+          unplacedPieces,
+          level,
+          learnedWeights
+        });
+
       }, 1000);
       return () => clearTimeout(botMoveTimer);
     }
-  }, [isBotGame, winner, currentPlayer, turnState, board, gamePhase, unplacedPieces, bot, pendingBotMove, learnedWeights]);
-
+  }, [isBotGame, winner, currentPlayer, turnState, board, gamePhase, unplacedPieces, bot, pendingBotMove, learnedWeights, finalizeGame, user?.username]);
   // Bot move completion effect
   useEffect(() => {
     if (pendingBotMove && turnState === 'SELECTED_PIECE' && activeNode === pendingBotMove.from) {
       const timer = setTimeout(() => {
-        handleNodeClick(pendingBotMove.to);
+        handleNodeClick(pendingBotMove.to, true);
         setPendingBotMove(null);
       }, 600);
       return () => clearTimeout(timer);
@@ -469,7 +515,7 @@ function App() {
     }
   };
 
-  const handleOfferDraw = () => {
+  const handleOfferDraw = async () => {
     if (!winnerRef.current) {
       if (isMultiplayer && room?.channel) {
         room.channel.send({
@@ -478,6 +524,14 @@ function App() {
           payload: { from: user.username }
         });
         alert('Draw offer sent');
+      } else if (isBotGame) {
+        const botAccepts = await shouldBotAcceptDraw(board, 2, gamePhase, turnState, unplacedPieces, bot.level, learnedWeights);
+        if (botAccepts) {
+          alert(`${bot.name} has accepted the draw.`);
+          finalizeGame(null, 'Mutual Agreement', true);
+        } else {
+          alert(`${bot.name} has declined your draw offer. "The game is not yet decided!"`);
+        }
       } else {
         if (window.confirm('Propose a draw?')) {
           setWinner('Draw');
@@ -513,8 +567,12 @@ function App() {
     }
   }, [gamePhase, finalizeGame, addMoveToHistory]);
 
-  const handleNodeClick = (nodeId) => {
+  const handleNodeClick = (nodeId, isBotCall = false) => {
     if (winner) return;
+    
+    // Prevent human from playing for the bot
+    if (isBotGame && currentPlayer === 2 && !isBotCall) return;
+    
     if (isMultiplayer && currentPlayer !== playerSide) return;
 
     const clickedPlayer = board[nodeId];

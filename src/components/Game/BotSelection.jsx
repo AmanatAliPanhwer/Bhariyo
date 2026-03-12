@@ -37,8 +37,8 @@ const BOTS = {
   Advanced: [
     { id: 'wadero', name: 'Wadero', rating: 2000, avatar: '/wadero.png', quote: "The board is my kingdom, and I know every corner.", level: 'ADVANCED' },
     { id: 'dharam', name: 'Dharamdas', rating: 2200, avatar: '/Dharamdas.png', quote: "Wisdom comes to those who wait for the right move.", level: 'ADVANCED' },
-    { id: 'shahbaaz', name: 'Shahbaaz', rating: 2500, avatar: '/shahbaaz.png', quote: "My moves are as swift as a falcon.", level: 'ADVANCED' },
-    { id: 'kinza', name: 'Kinza', rating: 2800, avatar: '/kinza.png', quote: "The fragrance of victory is near.", level: 'ADVANCED' },
+    { id: 'shahbaaz', name: 'Shahbaaz', rating: 2500, avatar: '/shahbaaz.png', quote: "My moves are as swift as a falcon.", level: 'EXPERT' },
+    { id: 'kinza', name: 'Kinza', rating: 2800, avatar: '/kinza.png', quote: "The fragrance of victory is near.", level: 'EXPERT' },
   ]
 };
 
