@@ -434,11 +434,59 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
   const config = {
       'NOOB': { kRandom: 0.8, depth: 1, skillCap: 0.2 },
       'BEGINNER': { kRandom: 0.4, depth: 2, skillCap: 0.5 },
-      'INTERMEDIATE': { kRandom: 0.1, depth: 3, skillCap: 0.8 },
-      'ADVANCED': { kRandom: 0.0, depth: 5, skillCap: 1.0 }
+      'INTERMEDIATE': { useMCTS: true, numSearches: 100, kRandom: 0.1, fallbackDepth: 2 },
+      'ADVANCED': { useMCTS: true, numSearches: 400, kRandom: 0.0, fallbackDepth: 4 }
   };
-  const { kRandom, depth: maxDepth, skillCap } = config[level] || config.BEGINNER;
+  const currentConfig = config[level] || config.BEGINNER;
 
+  if (currentConfig.useMCTS) {
+    // Probability of making a random move even for MCTS bots (lower for higher levels)
+    if (Math.random() < (currentConfig.kRandom || 0)) {
+        const moves = getValidMovesInternal(board, player, phase, turnState, unplacedPieces);
+        return moves[Math.floor(Math.random() * moves.length)];
+    }
+
+    const game = new BhariyoMCTSWrapper();
+    const state = { board, player, phase, unplacedPieces, turnState };
+    const mctsArgs = {
+        num_searches: currentConfig.numSearches,
+        c_puct: 1.41,
+        dirichlet_epsilon: level === 'ADVANCED' ? 0.25 : 0.1,
+        dirichlet_alpha: 0.3
+    };
+    
+    // Simple heuristic-based model for MCTS in absence of a neural network
+    const heuristicModel = (s) => {
+        const moves = getValidMovesInternal(s.board, s.player, s.phase, s.turnState, s.unplacedPieces);
+        if (moves.length === 0) return { policy: [], value: 0 };
+
+        // Policy: prioritize mills and mobility
+        const movesWithScores = moves.map(move => {
+            const target = typeof move === 'number' ? move : move.to;
+            const millCount = findNewMills(s.board, s.player, target).length;
+            return { action: move, prob: 1 + millCount * 10 };
+        });
+        const totalProb = movesWithScores.reduce((sum, m) => sum + m.prob, 0);
+        const policy = movesWithScores.map(m => ({ action: m.action, prob: m.prob / totalProb }));
+
+        // Value: normalized evaluation
+        const evalScore = evaluateBoard(s.board, s.player, s.phase, learnedWeights);
+        const value = Math.tanh(evalScore / 2000);
+
+        return { policy, value };
+    };
+
+    const mcts = new MCTS(game, mctsArgs, heuristicModel);
+    const actionVisits = mcts.search(state);
+    
+    if (actionVisits.length === 0) return null;
+    
+    // Select action with most visits
+    actionVisits.sort((a, b) => b.visits - a.visits);
+    return actionVisits[0].action;
+  }
+
+  const { kRandom, depth: maxDepth, skillCap } = currentConfig;
   clearTT();
 
   // Apply Skill Cap: Dumbing down the learned weights for lower bots
@@ -562,6 +610,246 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
   }
 
   return bestMoveGlobal;
+};
+
+// MCTS Implementation
+class MCTSNode {
+  constructor(game, args, state, parent = null, actionTaken = null, prior = 0) {
+    this.game = game;
+    this.args = args;
+    this.state = state;
+    this.parent = parent;
+    this.actionTaken = actionTaken;
+    this.prior = prior;
+    this.children = [];
+    this.visitCount = 0;
+    this.valueSum = 0;
+  }
+
+  isFullyExpanded() {
+    return this.children.length > 0;
+  }
+
+  select() {
+    let bestChild = null;
+    let bestUCB = -Infinity;
+
+    for (const child of this.children) {
+      const ucb = this.getUCB(child);
+      if (ucb > bestUCB) {
+        bestUCB = ucb;
+        bestChild = child;
+      }
+    }
+    return bestChild;
+  }
+
+  getUCB(child) {
+    const qValue = child.visitCount === 0 ? 0 : (child.valueSum / child.visitCount);
+    // UCB formula: Q + C * P * sqrt(parent_N) / (1 + child_N)
+    return qValue + this.args.c_puct * child.prior * Math.sqrt(this.visitCount) / (1 + child.visitCount);
+  }
+
+  expand(policy) {
+    // policy is an array of { action, prob }
+    for (const { action, prob } of policy) {
+      const nextState = this.game.getNextState(this.state, action);
+      this.children.push(new MCTSNode(this.game, this.args, nextState, this, action, prob));
+    }
+  }
+}
+
+class MCTS {
+  constructor(game, args, model) {
+    this.game = game;
+    this.args = args;
+    this.model = model;
+  }
+
+  search(state) {
+    const root = new MCTSNode(this.game, this.args, state);
+
+    // Initial expansion
+    let { policy } = this.model(state);
+    
+    // Add Dirichlet noise to root
+    if (this.args.dirichlet_epsilon > 0 && policy.length > 0) {
+      const noise = this.getDirichletNoise(policy.length, this.args.dirichlet_alpha);
+      policy = policy.map((p, i) => ({
+        action: p.action,
+        prob: (1 - this.args.dirichlet_epsilon) * p.prob + this.args.dirichlet_epsilon * noise[i]
+      }));
+    }
+
+    root.expand(policy);
+
+    for (let i = 0; i < this.args.num_searches; i++) {
+      let node = root;
+      while (node.isFullyExpanded()) {
+        const nextNode = node.select();
+        if (!nextNode) break;
+        node = nextNode;
+      }
+
+      let { value, isTerminal } = this.game.getValueAndTerminated(node.state, node.actionTaken);
+      value = this.game.getOpponentValue(value);
+
+      if (!isTerminal) {
+        const res = this.model(node.state);
+        node.expand(res.policy);
+        value = res.value;
+      }
+
+      this.backpropagate(node, value);
+    }
+
+    return root.children.map(child => ({
+      action: child.actionTaken,
+      visits: child.visitCount
+    }));
+  }
+
+  backpropagate(node, value) {
+    node.valueSum += value;
+    node.visitCount += 1;
+    value = this.game.getOpponentValue(value);
+    if (node.parent) {
+      this.backpropagate(node.parent, value);
+    }
+  }
+
+  getDirichletNoise(size, alpha) {
+    const alphas = Array(size).fill(alpha);
+    let samples = alphas.map(a => this.gammaSample(a, 1));
+    const sum = samples.reduce((a, b) => a + b, 0);
+    return samples.map(s => s / (sum || 1));
+  }
+
+  gammaSample(alpha, beta) {
+    if (alpha < 1) return this.gammaSample(alpha + 1, beta) * Math.pow(Math.random(), 1 / alpha);
+    const d = alpha - 1 / 3;
+    const c = 1 / Math.sqrt(9 * d);
+    while (true) {
+      let x, v, u = Math.random();
+      do {
+        x = this.normalRandom();
+        v = 1 + c * x;
+      } while (v <= 0);
+      v = v * v * v;
+      if (u < 1 - 0.0331 * x * x * x * x) return d * v / beta;
+      if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v / beta;
+    }
+  }
+
+  normalRandom() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+  }
+}
+
+class BhariyoMCTSWrapper {
+  getNextState(state, action) {
+    return getNextStateInternal(state, action);
+  }
+
+  getValueAndTerminated(state, action) {
+    const isWin = checkWinList(state.board, state.player === 1 ? 2 : 1);
+    if (isWin) return { value: 1, isTerminal: true };
+    
+    const hasMoves = getValidMovesInternal(state.board, state.player, state.phase, state.turnState, state.unplacedPieces).length > 0;
+    if (!hasMoves) return { value: -1, isTerminal: true };
+    
+    return { value: 0, isTerminal: false };
+  }
+
+  getOpponentValue(value) {
+    return -value;
+  }
+}
+
+const getValidMovesInternal = (board, player, phase, turnState, unplacedPieces) => {
+  const isRemoving = turnState === 'REMOVING_OPPONENT';
+  const opponent = player === 1 ? 2 : 1;
+  
+  if (isRemoving) {
+    const targets = [];
+    const canRemoveAny = canRemoveAnyPiece(board, opponent);
+    board.forEach((p, i) => {
+      if (p === opponent) {
+        if (canRemoveAny) targets.push(i);
+        else {
+          const inMill = MILLS.some(mill => mill.includes(i) && isMill(board, opponent, mill));
+          if (!inMill) targets.push(i);
+        }
+      }
+    });
+    return targets;
+  }
+
+  if (phase === 'PLACING' && unplacedPieces[player] > 0) {
+    return board.map((p, i) => p === null ? i : -1).filter(i => i !== -1);
+  } else {
+    const moves = [];
+    const isFlying = board.filter(p => p === player).length === 3;
+    board.forEach((p, i) => {
+      if (p === player) {
+        if (isFlying) {
+          board.forEach((target, j) => {
+            if (target === null) moves.push({ from: i, to: j });
+          });
+        } else {
+          ADJACENCY[i].forEach(neighbor => {
+            if (board[neighbor] === null) moves.push({ from: i, to: neighbor });
+          });
+        }
+      }
+    });
+    return moves;
+  }
+};
+
+const getNextStateInternal = (state, move) => {
+  const { board, player, phase, unplacedPieces, turnState } = state;
+  const nextBoard = [...board];
+  const opponent = player === 1 ? 2 : 1;
+  let nextPhase = phase;
+  let nextUnplaced = { ...unplacedPieces };
+  let nextTurnState = turnState;
+  let nextPlayer = player;
+
+  if (turnState === 'REMOVING_OPPONENT') {
+    nextBoard[move] = null;
+    nextTurnState = nextPhase === 'PLACING' ? 'PLACING' : 'MOVING';
+    nextPlayer = opponent;
+    if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
+    if (nextPhase === 'PLAYING') nextTurnState = 'MOVING';
+  } else {
+    const target = typeof move === 'number' ? move : move.to;
+    const from = typeof move === 'number' ? null : move.from;
+    if (from !== null) nextBoard[from] = null;
+    nextBoard[target] = player;
+    
+    if (phase === 'PLACING' && from === null) nextUnplaced[player]--;
+
+    const newMills = findNewMills(nextBoard, player, target);
+    if (newMills.length > 0) {
+      nextTurnState = 'REMOVING_OPPONENT';
+    } else {
+      nextPlayer = opponent;
+      if (nextPhase === 'PLACING' && nextUnplaced[1] === 0 && nextUnplaced[2] === 0) nextPhase = 'PLAYING';
+      nextTurnState = nextPhase === 'PLACING' ? 'PLACING' : 'MOVING';
+    }
+  }
+
+  return { 
+    board: nextBoard, 
+    player: nextPlayer, 
+    phase: nextPhase, 
+    unplacedPieces: nextUnplaced, 
+    turnState: nextTurnState 
+  };
 };
 
 
