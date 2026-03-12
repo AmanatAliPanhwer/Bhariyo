@@ -446,10 +446,28 @@ export const getBotMove = (board, player, phase, turnState, unplacedPieces, leve
         return moves[Math.floor(Math.random() * moves.length)];
     }
 
+    // Dynamic Thinking: Determine if the position is "Critical"
+    const evalScore = evaluateBoard(board, player, phase, learnedWeights);
+    const opp = player === 1 ? 2 : 1;
+    
+    // Criticality Factors:
+    // 1. Opponent has a potential mill (immediate threat)
+    // 2. Evaluation is near zero (very balanced/tense game)
+    // 3. One player is close to losing (3 pieces left)
+    const getPotentialMills = (p) => MILLS.filter(mill => mill.filter(n => board[n] === p).length === 2 && mill.filter(n => board[n] === null).length === 1).length;
+    const isCritical = getPotentialMills(opp) > 0 || Math.abs(evalScore) < 500 || board.filter(p => p === player).length <= 4 || board.filter(p => p === opp).length <= 4;
+    
+    let adjustedSearches = currentConfig.numSearches;
+    if (isCritical) {
+        // Double the "thinking" effort for critical moves
+        adjustedSearches *= 2;
+        console.log(`%c [BOT] Critical position detected. Intensifying search: ${adjustedSearches} iterations.`, 'color: #ff9900; font-weight: bold;');
+    }
+
     const game = new BhariyoMCTSWrapper();
     const state = { board, player, phase, unplacedPieces, turnState };
     const mctsArgs = {
-        num_searches: currentConfig.numSearches,
+        num_searches: adjustedSearches,
         c_puct: 1.41,
         dirichlet_epsilon: level === 'ADVANCED' ? 0.25 : 0.1,
         dirichlet_alpha: 0.3

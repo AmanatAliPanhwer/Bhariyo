@@ -38,7 +38,8 @@ import {
   PhoneOff
 } from 'lucide-react';
 
-const API_BASE_URL = 'https://bhariyo-backend.vercel.app'; // Change to your Vercel URL when deploying
+const API_BASE_URL = 'https://bhariyo-backend.vercel.app';
+// const API_BASE_URL = 'http://localhost:5000';
 
 function App() {
   const { user, loading: authLoading, logout, updateUser } = useAuth();
