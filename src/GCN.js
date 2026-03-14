@@ -1,5 +1,5 @@
 import * as tf from '@tensorflow/tfjs';
-import { ADJACENCY } from './gameLogic';
+import { ADJACENCY } from './gameLogic.js';
 
 /**
  * Custom Layer for Adjacency Matrix Multiplication

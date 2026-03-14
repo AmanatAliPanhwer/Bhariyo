@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Board from './Board';
+import { generatePuzzle, getHintFromAI } from '../puzzleGenerator';
+import { findNewMills } from '../gameLogic.js';
 import './Learn.css'; // Reuse Learn.css for absolute consistency
 
 const getBoardWith = (positions) => {
@@ -54,6 +56,7 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
   const [success, setSuccess] = useState(false);
   const [feedback, setFeedback] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hintActive, setHintActive] = useState(false);
 
   // TTS Helper
   const speak = (text) => {
@@ -74,6 +77,7 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
     setSuccess(false);
     setFeedback(null);
     setIsProcessing(false);
+    setHintActive(false);
     
     const timeout = setTimeout(() => {
       speak(puzzle.instruction);
@@ -81,50 +85,67 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
     return () => clearTimeout(timeout);
   }, [puzzle]);
 
-  const handleNodeClick = (nodeId) => {
-    if (success || isProcessing) return;
+  const handlePlacePuzzle = (nodeId) => {
+    const exp = puzzle.expected;
+    const clickedPlayer = board[nodeId];
+    if (clickedPlayer !== null) return;
 
+    const newBoard = [...board];
+    newBoard[nodeId] = 1;
+    setBoard(newBoard);
+
+    const isCorrect = (nodeId === exp.nodeId);
+    const formedMill = findNewMills(newBoard, 1, nodeId).length > 0;
+
+    if (isCorrect || formedMill) {
+      handleSuccess();
+    } else {
+      handleWrongMove();
+    }
+  };
+
+  const handleMovePuzzle = (nodeId) => {
     const exp = puzzle.expected;
     const clickedPlayer = board[nodeId];
 
-    if (exp.type === 'PLACE') {
+    if (activeNode === null) {
+      if (clickedPlayer === 1) {
+        setActiveNode(nodeId);
+      }
+    } else {
+      if (clickedPlayer === 1) {
+        setActiveNode(nodeId);
+        return;
+      }
+      
       if (clickedPlayer !== null) return;
 
+      // Visual move
       const newBoard = [...board];
       newBoard[nodeId] = 1;
+      newBoard[activeNode] = null;
       setBoard(newBoard);
 
-      if (nodeId === exp.nodeId) {
+      const isExactMove = (nodeId === exp.toId && activeNode === exp.fromId);
+      const formsMill = findNewMills(newBoard, 1, nodeId).length > 0;
+
+      if (isExactMove || formsMill) {
         handleSuccess();
       } else {
         handleWrongMove();
       }
+      setActiveNode(null);
+    }
+  };
+
+  const handleNodeClick = (nodeId) => {
+    if (success || isProcessing) return;
+
+    const exp = puzzle.expected;
+    if (exp.type === 'PLACE') {
+      handlePlacePuzzle(nodeId);
     } else if (exp.type === 'MOVE') {
-      if (activeNode === null) {
-        if (clickedPlayer === 1) {
-          setActiveNode(nodeId);
-        }
-      } else {
-        if (clickedPlayer === 1) {
-           setActiveNode(nodeId);
-           return;
-        }
-        
-        if (clickedPlayer !== null) return;
-
-        // Visual move
-        const newBoard = [...board];
-        newBoard[nodeId] = 1;
-        newBoard[activeNode] = null;
-        setBoard(newBoard);
-
-        if (nodeId === exp.toId && activeNode === exp.fromId) {
-          handleSuccess();
-        } else {
-          handleWrongMove();
-        }
-        setActiveNode(null);
-      }
+      handleMovePuzzle(nodeId);
     }
   };
 
@@ -146,13 +167,32 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
     }, 1200);
   };
 
+  const handleHint = async () => {
+    setHintActive(true);
+    speak("Look closely at the highlighted move.");
+    
+    // We can use the AI to even find hints for static puzzles or auto-generated ones
+    // But for static ones, we have puzzle.expected.
+    // For auto ones, we also have puzzle.expected.
+    // So let's just use the expected move.
+    
+    setTimeout(() => {
+        setHintActive(false);
+    }, 2000);
+  };
+
   const getHighlights = () => {
     if (success) return [];
-    if (puzzle.expected.type === 'PLACE') return [puzzle.expected.nodeId];
-    if (puzzle.expected.type === 'MOVE') {
-      if (activeNode === null) return [puzzle.expected.fromId];
-      return [puzzle.expected.toId];
+    
+    // If hint is active, show the expected move
+    if (hintActive) {
+      if (puzzle.expected.type === 'PLACE') return [puzzle.expected.nodeId];
+      if (puzzle.expected.type === 'MOVE') return [puzzle.expected.fromId, puzzle.expected.toId];
     }
+
+    // Otherwise, only highlight the active node if the user is in the middle of a move
+    if (activeNode !== null) return [activeNode];
+    
     return [];
   };
 
@@ -222,7 +262,9 @@ function InteractivePuzzle({ puzzle, onBack, onNextPuzzle, isMuted, onToggleMute
             {success ? (
               <button className="next-lesson-btn" onClick={onNextPuzzle}>Next Puzzle</button>
             ) : (
-              <button className="next-step-btn disabled" disabled>Solve Puzzle</button>
+              <button className="next-step-btn" onClick={handleHint} disabled={isProcessing}>
+                Hint
+              </button>
             )}
           </div>
         </div>
@@ -256,8 +298,13 @@ export default function Puzzles({ onBackToDashboard }) {
   };
 
   const handleNextPuzzle = () => {
-    if (activePuzzle && !completedPuzzles.includes(activePuzzle.id)) {
+    if (activePuzzle && activePuzzleIndex !== -1 && !completedPuzzles.includes(activePuzzle.id)) {
       setCompletedPuzzles(prev => [...prev, activePuzzle.id]);
+    }
+
+    if (activePuzzleIndex === -1) {
+      handleGeneratePuzzle();
+      return;
     }
 
     const nextIndex = activePuzzleIndex + 1;
@@ -265,8 +312,14 @@ export default function Puzzles({ onBackToDashboard }) {
       setActivePuzzle(FINAL_PUZZLES[nextIndex]);
       setActivePuzzleIndex(nextIndex);
     } else {
-      setActivePuzzle(null);
+      handleGeneratePuzzle();
     }
+  };
+
+  const handleGeneratePuzzle = () => {
+    const puzzle = generatePuzzle();
+    setActivePuzzle(puzzle);
+    setActivePuzzleIndex(-1);
   };
 
   if (activePuzzle) {
@@ -353,6 +406,18 @@ export default function Puzzles({ onBackToDashboard }) {
                 </button>
               );
             })}
+
+            {/* Infinite Mode Button */}
+            <button
+               className={`roadmap-item ${activePuzzleIndex === -1 ? 'active' : ''}`}
+               onClick={handleGeneratePuzzle}
+            >
+              <span className="roadmap-number">∞</span>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span className="roadmap-label">Infinite Puzzles</span>
+                <span className="roadmap-meta difficulty-text-intermediate">Auto-Generated</span>
+              </div>
+            </button>
           </div>
         </div>
 

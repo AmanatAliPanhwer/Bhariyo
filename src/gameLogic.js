@@ -426,8 +426,8 @@ const minimax = (board, depth, alpha, beta, isMaximizing, player, phase, unplace
   return bestEval;
 };
 
-import { BhariyoGCN } from './GCN';
-import { BhariyoONNXModel } from './ONNXModel';
+import { BhariyoGCN } from './GCN.js';
+import { BhariyoONNXModel } from './ONNXModel.js';
 
 // Global singleton for the neural networks
 let GLOBAL_GCN = null;
