@@ -2,7 +2,7 @@
 
 Bhariyo is a modern, AI-powered digital implementation of the ancient board game **Nine Men's Morris**. Built with a focus on high-performance AI, real-time multiplayer connectivity, and a premium user experience, Bhariyo brings a centuries-old tradition into the modern era.
 
-![Bhariyo Board Preview](bored.png)
+![Bhariyo Board Preview](Screenshot_2026-05-09_134305.png)
 
 ## 🌟 Key Features
 
